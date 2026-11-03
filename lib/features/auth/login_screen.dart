@@ -3,6 +3,7 @@
 // form with demo credentials, remember last user, nicer branding.
 
 import 'package:flutter/material.dart';
+import 'package:hiraya/data/firebase_booking_repository.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/widgets.dart';
@@ -14,7 +15,7 @@ class LoginScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final users = context.read<AppState>().repo.users;
+    final users = context.watch<AppState>().repo.users;
     final students = users.where((u) => u.role == UserRole.student);
     final instructors = users.where((u) => u.role == UserRole.instructor);
     final theme = Theme.of(context);
@@ -24,14 +25,38 @@ class LoginScreen extends StatelessWidget {
         child: ListView(
           padding: const EdgeInsets.all(24),
           children: [
+            // Inside LoginScreen build method children list:
+            const SizedBox(height: 32),
+            OutlinedButton.icon(
+              onPressed: () async {
+                final repo = context.read<AppState>().repo;
+                try {
+                  await repo.seedFirestore();
+                  await repo.loadDemoUsers();
+
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Database seeded successfully! Refreshing...')),
+                    );
+                  }
+                } catch (e) {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(
+                      context,
+                    ).showSnackBar(SnackBar(content: Text('Seeding failed: $e')));
+                  }
+                }
+              },
+              icon: const Icon(Icons.cloud_upload_outlined),
+              label: const Text('Seed Firestore Demo Data'),
+            ),
             const SizedBox(height: 24),
             Icon(Icons.event_available, size: 64, color: theme.colorScheme.primary),
             const SizedBox(height: 12),
             Text(
               'Student Consultation\nAppointment System',
               textAlign: TextAlign.center,
-              style: theme.textTheme.headlineSmall
-                  ?.copyWith(fontWeight: FontWeight.bold),
+              style: theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 8),
             Text(
@@ -66,7 +91,15 @@ class _UserTile extends StatelessWidget {
         title: Text(user.name),
         subtitle: Text(user.department),
         trailing: const Icon(Icons.chevron_right),
-        onTap: () => context.read<AppState>().login(user),
+        onTap: () async {
+          try {
+            await context.read<AppState>().signInDemo(user);
+          } catch (e) {
+            if (!context.mounted) return;
+
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString())));
+          }
+        },
       ),
     );
   }

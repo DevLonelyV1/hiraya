@@ -1,0 +1,702 @@
+import 'dart:async';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
+
+import '../core/format.dart';
+import '../models/app_notification.dart';
+import '../models/app_user.dart';
+import '../models/booking.dart';
+import '../models/slot.dart';
+import 'booking_repository.dart';
+
+/// Firebase (Auth + Cloud Firestore) implementation.
+///
+/// After login it opens Firestore listeners and keeps the results in memory,
+/// so the synchronous reads in the contract stay instant. Every snapshot
+/// emits on [changes], which makes AppState refresh the screens.
+///
+/// Collections: users, slots, bookings, notifications (see firestore.rules).
+/// Times are stored as UTC Timestamps; `Timestamp.toDate()` returns local time.
+class FirebaseBookingRepository implements BookingRepository {
+  FirebaseBookingRepository({FirebaseAuth? auth, FirebaseFirestore? db})
+    : _auth = auth ?? FirebaseAuth.instance,
+      _db = db ?? FirebaseFirestore.instance;
+
+  final FirebaseAuth _auth;
+  final FirebaseFirestore _db;
+
+  final _changes = StreamController<void>.broadcast();
+  final List<StreamSubscription<dynamic>> _subs = [];
+
+  List<AppUser> _users = [];
+  List<Slot> _slots = [];
+  List<Booking> _bookings = [];
+  List<AppNotification> _notifications = [];
+
+  @override
+  Stream<void> get changes => _changes.stream;
+
+  @override
+  String? get loginHint => null;
+
+  // ---------------------------------------------------------------- auth
+
+  @override
+  Future<AppUser?> restoreSession() async {
+    final fbUser = await _auth.authStateChanges().first;
+    if (fbUser == null) return null;
+    try {
+      return await _loadProfile(fbUser);
+    } catch (e) {
+      debugPrint('restoreSession failed: $e');
+      return null;
+    }
+  }
+
+  @override
+  Future<AppUser> signIn(String email, String password) async {
+    try {
+      final cred = await _auth.signInWithEmailAndPassword(email: email.trim(), password: password);
+      return await _loadProfile(cred.user!);
+    } on FirebaseAuthException catch (e) {
+      throw AuthFailure(_authMessage(e.code));
+    }
+  }
+
+  @override
+  Future<void> signOut() async {
+    await _stopSync();
+    await _auth.signOut();
+  }
+
+  String _authMessage(String code) => switch (code) {
+    'invalid-credential' ||
+    'wrong-password' ||
+    'user-not-found' ||
+    'invalid-email' => 'Wrong email or password.',
+    'user-disabled' => 'This account has been disabled.',
+    'too-many-requests' => 'Too many attempts. Try again later.',
+    'network-request-failed' => 'No connection. Check your internet and try again.',
+    _ => 'Could not sign in ($code).',
+  };
+
+  Future<AppUser> _loadProfile(User fbUser) async {
+    final doc = await _db.collection('users').doc(fbUser.uid).get();
+    final me = doc.exists ? _userFrom(doc) : null;
+    if (me == null || doc.data()?['active'] == false) {
+      await _auth.signOut();
+      throw AuthFailure(
+        'This account is not set up or has been deactivated. Contact your administrator.',
+      );
+    }
+    await _startSync(me);
+    return me;
+  }
+
+  // ---------------------------------------------------------------- sync
+
+  Future<void> _startSync(AppUser me) async {
+    await _stopSync();
+    final byMe = me.role == UserRole.student ? 'studentId' : 'instructorId';
+    await Future.wait([
+      _listen(_db.collection('users'), (snap) {
+        _users = snap.docs
+            .where((d) => d.data()['active'] != false)
+            .map(_userFrom)
+            .whereType<AppUser>()
+            .toList();
+      }),
+      _listen(_db.collection('slots'), (snap) {
+        _slots = snap.docs.map(_slotFrom).toList();
+      }),
+      _listen(_db.collection('bookings').where(byMe, isEqualTo: me.id), (snap) {
+        _bookings = snap.docs.map(_bookingFrom).toList();
+      }),
+      _listen(_db.collection('notifications').where('userId', isEqualTo: me.id), (snap) {
+        _notifications = snap.docs.map(_notificationFrom).toList();
+      }),
+    ]);
+  }
+
+  Future<void> _stopSync() async {
+    for (final s in _subs) {
+      await s.cancel();
+    }
+    _subs.clear();
+    // _users = [];
+    _slots = [];
+    _bookings = [];
+    _notifications = [];
+  }
+
+  /// Subscribes to a query. The returned future completes after the first
+  /// snapshot, so login can wait until data is ready.
+  Future<void> _listen(
+    Query<Map<String, dynamic>> query,
+    void Function(QuerySnapshot<Map<String, dynamic>> snap) apply,
+  ) {
+    final first = Completer<void>();
+    _subs.add(
+      query.snapshots().listen(
+        (snap) {
+          apply(snap);
+          _changes.add(null);
+          if (!first.isCompleted) first.complete();
+        },
+        onError: (Object e) {
+          debugPrint('Firestore listener error: $e');
+          if (!first.isCompleted) first.completeError(e);
+        },
+      ),
+    );
+    return first.future;
+  }
+
+  // ------------------------------------------------------------- parsing
+
+  AppUser? _userFrom(DocumentSnapshot<Map<String, dynamic>> d) {
+    final m = d.data();
+    if (m == null) return null;
+    final role = switch (m['role']) {
+      'student' => UserRole.student,
+      'instructor' => UserRole.instructor,
+      _ => null, // e.g. admin: not handled by the app yet
+    };
+    if (role == null) return null;
+    return AppUser(
+      id: d.id,
+      name: m['name'] as String? ?? 'Unknown',
+      role: role,
+      department: m['department'] as String? ?? '',
+    );
+  }
+
+  Slot _slotFrom(DocumentSnapshot<Map<String, dynamic>> d) {
+    final m = d.data()!;
+    return Slot(
+      id: d.id,
+      instructorId: m['instructorId'] as String,
+      start: (m['start'] as Timestamp).toDate(),
+      end: (m['end'] as Timestamp).toDate(),
+      isLocked: m['isLocked'] == true,
+      inQueue: m['inQueue'] == true,
+    );
+  }
+
+  BookingStatus _status(Object? v, BookingStatus fallback) =>
+      BookingStatus.values.where((s) => s.name == v).firstOrNull ?? fallback;
+
+  Booking _bookingFrom(DocumentSnapshot<Map<String, dynamic>> d) {
+    final m = d.data()!;
+    return Booking(
+      id: d.id,
+      studentId: m['studentId'] as String,
+      instructorId: m['instructorId'] as String,
+      slotId: m['slotId'] as String,
+      topic: m['topic'] as String? ?? '',
+      fileName: m['fileName'] as String?,
+      createdAt: (m['createdAt'] as Timestamp).toDate(),
+      status: _status(m['status'], BookingStatus.pending),
+    )..statusBeforeCancel = _status(m['statusBeforeCancel'], BookingStatus.confirmed);
+  }
+
+  AppNotification _notificationFrom(DocumentSnapshot<Map<String, dynamic>> d) {
+    final m = d.data()!;
+    return AppNotification(
+      id: d.id,
+      userId: m['userId'] as String,
+      message: m['message'] as String? ?? '',
+      createdAt: (m['createdAt'] as Timestamp).toDate(),
+      read: m['read'] == true,
+    );
+  }
+
+  // --------------------------------------------------------------- users
+
+  @override
+  List<AppUser> get users => List.unmodifiable(_users);
+
+  @override
+  List<AppUser> get instructors => _users.where((u) => u.role == UserRole.instructor).toList();
+
+  @override
+  AppUser? userById(String id) => _users.where((u) => u.id == id).firstOrNull;
+
+  String _name(String userId) => userById(userId)?.name ?? 'Unknown';
+
+  // --------------------------------------------------------------- slots
+
+  DocumentReference<Map<String, dynamic>> _slotRef(String id) => _db.collection('slots').doc(id);
+
+  DocumentReference<Map<String, dynamic>> _bookingRef(String id) =>
+      _db.collection('bookings').doc(id);
+
+  @override
+  List<Slot> slotsFor(String instructorId, {bool onlyAvailable = false}) {
+    final now = DateTime.now();
+    final list = _slots.where((s) {
+      if (s.instructorId != instructorId) return false;
+      if (onlyAvailable) return !s.isLocked && s.start.isAfter(now);
+      return true;
+    }).toList();
+    list.sort((a, b) => a.start.compareTo(b.start));
+    return list;
+  }
+
+  @override
+  Slot? slotById(String id) => _slots.where((s) => s.id == id).firstOrNull;
+
+  @override
+  Future<Slot> addSlot(String instructorId, DateTime start, DateTime end) async {
+    final overlaps = _slots.any(
+      (s) => s.instructorId == instructorId && s.start.isBefore(end) && start.isBefore(s.end),
+    );
+    if (overlaps) {
+      throw SlotUnavailableException('That time overlaps an existing slot.');
+    }
+    final ref = _db.collection('slots').doc();
+    await ref.set({
+      'instructorId': instructorId,
+      'start': Timestamp.fromDate(start.toUtc()),
+      'end': Timestamp.fromDate(end.toUtc()),
+      'isLocked': false,
+      'inQueue': false,
+    });
+    return Slot(id: ref.id, instructorId: instructorId, start: start, end: end);
+  }
+
+  @override
+  Future<void> removeSlot(String slotId) async {
+    final slot = slotById(slotId);
+    if (slot == null) return;
+    if (slot.isLocked) {
+      throw SlotUnavailableException('This slot is booked. Cancel the booking first.');
+    }
+    await _slotRef(slotId).delete();
+  }
+
+  // ------------------------------------------------------------ bookings
+
+  Booking _booking(String id) => _bookings.firstWhere((b) => b.id == id);
+
+  DateTime _slotStart(Booking b) => slotById(b.slotId)?.start ?? b.createdAt;
+
+  @override
+  List<Booking> bookingsForStudent(String studentId) {
+    final list = _bookings.where((b) => b.studentId == studentId).toList();
+    list.sort((a, b) => _slotStart(a).compareTo(_slotStart(b)));
+    return list;
+  }
+
+  @override
+  List<Booking> bookingsForInstructor(String instructorId) {
+    final list = _bookings.where((b) => b.instructorId == instructorId).toList();
+    list.sort((a, b) => _slotStart(a).compareTo(_slotStart(b)));
+    return list;
+  }
+
+  Map<String, dynamic> _notif(String userId, String message) => {
+    'userId': userId,
+    'message': message,
+    'read': false,
+    'createdAt': Timestamp.fromDate(DateTime.now().toUtc()),
+  };
+
+  DocumentReference<Map<String, dynamic>> _newNotifRef() => _db.collection('notifications').doc();
+
+  /// Frees a slot (booking rejected, canceled or moved away).
+  Map<String, dynamic> get _freed => {'isLocked': false, 'inQueue': false};
+
+  @override
+  Future<Booking> book({
+    required String studentId,
+    required String slotId,
+    required String topic,
+    String? fileName,
+  }) async {
+    final slotRef = _slotRef(slotId);
+    final bookingRef = _db.collection('bookings').doc();
+    final createdAt = DateTime.now();
+    late Booking booking;
+
+    // The transaction makes "check unlocked + lock + create booking" atomic,
+    // so two students racing for one slot can't both win.
+    await _db.runTransaction((tx) async {
+      final snap = await tx.get(slotRef);
+      if (!snap.exists || snap.data()!['isLocked'] == true) {
+        throw SlotUnavailableException();
+      }
+      final slot = _slotFrom(snap);
+      tx.update(slotRef, {'isLocked': true, 'inQueue': true});
+      tx.set(bookingRef, {
+        'studentId': studentId,
+        'instructorId': slot.instructorId,
+        'slotId': slotId,
+        'topic': topic,
+        'fileName': fileName,
+        'status': BookingStatus.pending.name,
+        'statusBeforeCancel': BookingStatus.confirmed.name,
+        'createdAt': Timestamp.fromDate(createdAt.toUtc()),
+      });
+      tx.set(
+        _newNotifRef(),
+        _notif(
+          slot.instructorId,
+          'New request from ${_name(studentId)} for ${fmtDateTime(slot.start)}.',
+        ),
+      );
+      tx.set(
+        _newNotifRef(),
+        _notif(
+          studentId,
+          'Request sent to ${_name(slot.instructorId)} for ${fmtDateTime(slot.start)}. Waiting for approval.',
+        ),
+      );
+      booking = Booking(
+        id: bookingRef.id,
+        studentId: studentId,
+        instructorId: slot.instructorId,
+        slotId: slotId,
+        topic: topic,
+        fileName: fileName,
+        createdAt: createdAt,
+      );
+    });
+    return booking;
+  }
+
+  @override
+  Future<void> reschedule(String bookingId, String newSlotId) async {
+    final b = _booking(bookingId);
+    if (b.status != BookingStatus.pending && b.status != BookingStatus.confirmed) {
+      throw StateError('Only pending or confirmed bookings can be moved.');
+    }
+    final newRef = _slotRef(newSlotId);
+
+    await _db.runTransaction((tx) async {
+      final snap = await tx.get(newRef);
+      if (!snap.exists || snap.data()!['isLocked'] == true) {
+        throw SlotUnavailableException();
+      }
+      final newSlot = _slotFrom(snap);
+      tx.update(_slotRef(b.slotId), _freed);
+      tx.update(newRef, {'isLocked': true, 'inQueue': true});
+      tx.update(_bookingRef(b.id), {
+        'slotId': newSlotId,
+        'instructorId': newSlot.instructorId,
+        'status': BookingStatus.pending.name,
+      });
+      tx.set(
+        _newNotifRef(),
+        _notif(
+          newSlot.instructorId,
+          '${_name(b.studentId)} rescheduled to ${fmtDateTime(newSlot.start)}. Please review.',
+        ),
+      );
+      tx.set(
+        _newNotifRef(),
+        _notif(
+          b.studentId,
+          'Booking moved to ${fmtDateTime(newSlot.start)}. Waiting for approval.',
+        ),
+      );
+    });
+  }
+
+  @override
+  Future<void> requestCancellation(String bookingId) async {
+    final b = _booking(bookingId);
+    if (b.status != BookingStatus.pending && b.status != BookingStatus.confirmed) {
+      throw StateError('This booking cannot be canceled.');
+    }
+    final when = fmtDateTime(slotById(b.slotId)!.start);
+    final batch = _db.batch()
+      ..update(_bookingRef(b.id), {
+        'statusBeforeCancel': b.status.name,
+        'status': BookingStatus.cancelRequested.name,
+      })
+      ..set(
+        _newNotifRef(),
+        _notif(b.instructorId, '${_name(b.studentId)} requested to cancel the $when consultation.'),
+      )
+      ..set(
+        _newNotifRef(),
+        _notif(b.studentId, 'Cancellation requested. Waiting for instructor review.'),
+      );
+    await batch.commit();
+  }
+
+  // --------------------------------------------------- instructor actions
+
+  @override
+  Future<void> reviewRequest(String bookingId, {required bool approve}) async {
+    final b = _booking(bookingId);
+    if (b.status != BookingStatus.pending) return;
+    final slot = slotById(b.slotId)!;
+    final batch = _db.batch();
+    if (approve) {
+      batch
+        ..update(_bookingRef(b.id), {'status': BookingStatus.confirmed.name})
+        ..set(
+          _newNotifRef(),
+          _notif(
+            b.studentId,
+            '${_name(b.instructorId)} approved your consultation on ${fmtDateTime(slot.start)}.',
+          ),
+        );
+    } else {
+      batch
+        ..update(_bookingRef(b.id), {'status': BookingStatus.rejected.name})
+        ..update(_slotRef(slot.id), _freed)
+        ..set(
+          _newNotifRef(),
+          _notif(
+            b.studentId,
+            '${_name(b.instructorId)} declined your request for ${fmtDateTime(slot.start)}.',
+          ),
+        );
+    }
+    await batch.commit();
+  }
+
+  @override
+  Future<void> reviewCancellation(String bookingId, {required bool approve}) async {
+    final b = _booking(bookingId);
+    if (b.status != BookingStatus.cancelRequested) return;
+    final slot = slotById(b.slotId)!;
+    final batch = _db.batch();
+    if (approve) {
+      batch
+        ..update(_bookingRef(b.id), {'status': BookingStatus.canceled.name})
+        ..update(_slotRef(slot.id), _freed)
+        ..set(
+          _newNotifRef(),
+          _notif(b.studentId, 'Your cancellation for ${fmtDateTime(slot.start)} was approved.'),
+        );
+    } else {
+      batch
+        ..update(_bookingRef(b.id), {'status': b.statusBeforeCancel.name})
+        ..set(
+          _newNotifRef(),
+          _notif(
+            b.studentId,
+            'Your cancellation for ${fmtDateTime(slot.start)} was not approved. The booking stays.',
+          ),
+        );
+    }
+    await batch.commit();
+  }
+
+  @override
+  Future<void> markCompleted(String bookingId) async {
+    final b = _booking(bookingId);
+    if (b.status != BookingStatus.confirmed) return;
+    final batch = _db.batch()
+      ..update(_bookingRef(b.id), {'status': BookingStatus.completed.name})
+      ..update(_slotRef(b.slotId), {'inQueue': false})
+      ..set(
+        _newNotifRef(),
+        _notif(b.studentId, 'Your consultation with ${_name(b.instructorId)} is marked completed.'),
+      );
+    await batch.commit();
+  }
+
+  @override
+  Future<void> cancelByInstructor(String bookingId) async {
+    final b = _booking(bookingId);
+    if (b.status != BookingStatus.pending && b.status != BookingStatus.confirmed) return;
+    final slot = slotById(b.slotId)!;
+    final batch = _db.batch()
+      ..update(_bookingRef(b.id), {'status': BookingStatus.canceled.name})
+      ..update(_slotRef(slot.id), _freed)
+      ..set(
+        _newNotifRef(),
+        _notif(
+          b.studentId,
+          '${_name(b.instructorId)} canceled your consultation on ${fmtDateTime(slot.start)}.',
+        ),
+      );
+    await batch.commit();
+  }
+
+  // --------------------------------------------------------------- queue
+
+  @override
+  List<Slot> queueFor(String instructorId, DateTime day) {
+    final list = _slots
+        .where((s) => s.instructorId == instructorId && s.inQueue && sameDay(s.start, day))
+        .toList();
+    list.sort((a, b) => a.start.compareTo(b.start));
+    return list;
+  }
+
+  @override
+  int queuePosition(String bookingId) {
+    final b = _booking(bookingId);
+    if (!b.status.isActive) return 0;
+    final slot = slotById(b.slotId);
+    if (slot == null) return 0;
+    final queue = queueFor(b.instructorId, slot.start);
+    return queue.indexWhere((s) => s.id == slot.id) + 1;
+  }
+
+  // -------------------------------------------------------- notifications
+
+  @override
+  List<AppNotification> notificationsFor(String userId) {
+    final list = _notifications.where((n) => n.userId == userId).toList();
+    list.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return list;
+  }
+
+  @override
+  int unreadCount(String userId) =>
+      _notifications.where((n) => n.userId == userId && !n.read).length;
+
+  @override
+  Future<void> markAllRead(String userId) async {
+    final unread = _notifications.where((n) => n.userId == userId && !n.read).toList();
+    if (unread.isEmpty) return;
+    final batch = _db.batch();
+    for (final n in unread) {
+      batch.update(_db.collection('notifications').doc(n.id), {'read': true});
+    }
+    await batch.commit();
+  }
+
+  // -------------------------------------------------------- developer options
+
+  /// Seeds Firestore with initial demo users, slots, and bookings.
+  @override
+  Future<void> seedFirestore() async {
+    final batch = _db.batch();
+
+    // 1. Seed Users (matching the demo accounts)
+    final demoUsers = [
+      {
+        'id': 's1',
+        'name': 'Ana Villanueva',
+        'role': 'student',
+        'department': 'BS Information Technology',
+        'active': true,
+      },
+      {
+        'id': 's2',
+        'name': 'Ben Ramos',
+        'role': 'student',
+        'department': 'BS Information Technology',
+        'active': true,
+      },
+      {
+        'id': 's3',
+        'name': 'Carla Mendoza',
+        'role': 'student',
+        'department': 'BS Information Technology',
+        'active': true,
+      },
+      {
+        'id': 'i1',
+        'name': 'Prof. Reyes',
+        'role': 'instructor',
+        'department': 'IT Department',
+        'active': true,
+      },
+      {
+        'id': 'i2',
+        'name': 'Prof. Santos',
+        'role': 'instructor',
+        'department': 'IT Department',
+        'active': true,
+      },
+      {
+        'id': 'i3',
+        'name': 'Prof. Dela Cruz',
+        'role': 'instructor',
+        'department': 'IT Department',
+        'active': true,
+      },
+    ];
+
+    for (final u in demoUsers) {
+      final ref = _db.collection('users').doc(u['id'] as String);
+      batch.set(ref, u, SetOptions(merge: true));
+    }
+
+    // 2. Seed Slots (similar to Mock repository logic for the next few days)
+    final today = DateTime.now();
+    const startTimes = [
+      [9, 0],
+      [9, 30],
+      [10, 0],
+      [13, 0],
+      [13, 30],
+      [14, 0],
+    ];
+
+    final instructorIds = ['i1', 'i2', 'i3'];
+    for (final instId in instructorIds) {
+      for (var d = 1; d <= 4; d++) {
+        final day = DateTime(today.year, today.month, today.day + d);
+        for (var i = 0; i < startTimes.length; i++) {
+          final start = DateTime(day.year, day.month, day.day, startTimes[i][0], startTimes[i][1]);
+          final end = start.add(const Duration(minutes: 30));
+
+          final slotId = 'slot_${instId}_${d}_$i';
+          final slotRef = _db.collection('slots').doc(slotId);
+
+          batch.set(slotRef, {
+            'instructorId': instId,
+            'start': Timestamp.fromDate(start.toUtc()),
+            'end': Timestamp.fromDate(end.toUtc()),
+            'isLocked': false,
+            'inQueue': false,
+          }, SetOptions(merge: true));
+        }
+      }
+    }
+
+    await batch.commit();
+    debugPrint('Firestore database seeded successfully!');
+  }
+
+  Future<void> loadDemoUsers() async {
+    final snapshot = await _db.collection('users').get();
+
+    _users = snapshot.docs
+        .where((d) => d.data()['active'] != false)
+        .map(_userFrom)
+        .whereType<AppUser>()
+        .toList();
+
+    _changes.add(null);
+
+    debugPrint('Loaded ${_users.length} users');
+  }
+
+  Future<AppUser> signInDemo(String userId) async {
+    try {
+      // Find the selected user in Firestore.
+      final doc = await _db.collection('users').doc(userId).get();
+
+      if (!doc.exists || doc.data()?['active'] == false) {
+        throw AuthFailure('Demo account not found or inactive.');
+      }
+
+      final user = _userFrom(doc);
+
+      if (user == null) {
+        throw AuthFailure('Invalid demo account.');
+      }
+
+      // Start Firestore listeners for this user.
+      await _startSync(user);
+
+      return user;
+    } catch (e) {
+      if (e is AuthFailure) rethrow;
+      throw AuthFailure('Could not load demo account: $e');
+    }
+  }
+}

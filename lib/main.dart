@@ -1,5 +1,8 @@
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:hiraya/data/firebase_booking_repository.dart';
+import 'package:hiraya/firebase_options.dart';
 import 'package:provider/provider.dart';
 
 import 'core/theme.dart';
@@ -10,13 +13,16 @@ import 'features/student/student_home.dart';
 import 'models/app_user.dart';
 import 'state/app_state.dart';
 
-void main() {
-  runApp(
-    ChangeNotifierProvider(
-      create: (_) => AppState(MockBookingRepository()),
-      child: const ConsultApp(),
-    ),
-  );
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+
+  final repo = FirebaseBookingRepository();
+
+  await repo.loadDemoUsers();
+
+  runApp(ChangeNotifierProvider(create: (_) => AppState(repo), child: const ConsultApp()));
 }
 
 class ConsultApp extends StatelessWidget {
