@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "835488606948",
+    "project_id": "hiraya-student-consultation",
+    "storage_bucket": "hiraya-student-consultation.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:835488606948:android:4222ccd793299bb6595af1",
+        "android_client_info": {
+          "package_name": "com.example.hiraya"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCjb_8YIy-M1deX7jZgYOQ-lJ4_1-WeUl8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

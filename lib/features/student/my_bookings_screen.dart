@@ -56,8 +56,8 @@ class _BookingCard extends StatelessWidget {
     final slot = repo.slotById(booking.slotId);
     final instructor = repo.userById(booking.instructorId);
     final position = repo.queuePosition(booking.id);
-    final canModify = booking.status == BookingStatus.pending ||
-        booking.status == BookingStatus.confirmed;
+    final canModify =
+        booking.status == BookingStatus.pending || booking.status == BookingStatus.confirmed;
     final theme = Theme.of(context);
 
     return Card(
@@ -72,16 +72,14 @@ class _BookingCard extends StatelessWidget {
                 Expanded(
                   child: Text(
                     instructor?.name ?? 'Instructor',
-                    style: theme.textTheme.titleMedium
-                        ?.copyWith(fontWeight: FontWeight.bold),
+                    style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
                   ),
                 ),
                 StatusChip(booking.status),
               ],
             ),
             const SizedBox(height: 8),
-            if (slot != null)
-              Text('${fmtDate(slot.start)} · ${fmtRange(slot.start, slot.end)}'),
+            if (slot != null) Text('${fmtDate(slot.start)} · ${fmtRange(slot.start, slot.end)}'),
             const SizedBox(height: 4),
             Text('Topic: ${booking.topic}'),
             if (booking.fileName != null)
@@ -118,21 +116,19 @@ class _BookingCard extends StatelessWidget {
                       onPressed: instructor == null
                           ? null
                           : () => Navigator.of(context).push(
-                                MaterialPageRoute(
-                                  builder: (_) => InstructorSlotsScreen(
-                                    instructor: instructor,
-                                    rescheduleBookingId: booking.id,
-                                  ),
+                              MaterialPageRoute(
+                                builder: (_) => InstructorSlotsScreen(
+                                  instructor: instructor,
+                                  rescheduleBookingId: booking.id,
                                 ),
                               ),
+                            ),
                       icon: const Icon(Icons.edit_calendar),
                       label: const Text('Reschedule'),
                     ),
                     TextButton.icon(
                       onPressed: () => _confirmCancel(context),
-                      style: TextButton.styleFrom(
-                        foregroundColor: theme.colorScheme.error,
-                      ),
+                      style: TextButton.styleFrom(foregroundColor: theme.colorScheme.error),
                       icon: const Icon(Icons.cancel_outlined),
                       label: const Text('Request cancellation'),
                     ),
@@ -154,10 +150,7 @@ class _BookingCard extends StatelessWidget {
           'Your instructor will review the request before the booking is canceled.',
         ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Keep booking'),
-          ),
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Keep booking')),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
             child: const Text('Send request'),
@@ -167,9 +160,9 @@ class _BookingCard extends StatelessWidget {
     );
     if (ok != true || !context.mounted) return;
     context.read<AppState>().requestCancellation(booking.id);
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Cancellation request sent.')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Cancellation request sent.')));
   }
 
   void _showQueue(BuildContext context) {
@@ -196,10 +189,7 @@ class _BookingCard extends StatelessWidget {
                     for (var i = 0; i < queue.length; i++)
                       ListTile(
                         dense: true,
-                        leading: CircleAvatar(
-                          radius: 14,
-                          child: Text('${i + 1}'),
-                        ),
+                        leading: CircleAvatar(radius: 14, child: Text('${i + 1}')),
                         title: Text(
                           queue[i].id == booking.id ? 'You' : 'Another student',
                           style: TextStyle(
@@ -208,9 +198,7 @@ class _BookingCard extends StatelessWidget {
                                 : FontWeight.normal,
                           ),
                         ),
-                        subtitle: Text(
-                          fmtTime(repo.slotById(queue[i].slotId)!.start),
-                        ),
+                        subtitle: Text(fmtTime(repo.slotById(queue[i].id)!.start)),
                       ),
                   ],
                 ),

@@ -60,6 +60,21 @@ class _RequestCard extends StatelessWidget {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
+  Future<void> _runAction(
+    BuildContext context,
+    Future<void> action,
+    String successMessage,
+  ) async {
+    try {
+      await action;
+      if (context.mounted) _toast(context, successMessage);
+    } on StateError catch (e) {
+      if (context.mounted) _toast(context, e.message);
+    } on Exception catch (e) {
+      if (context.mounted) _toast(context, e.toString());
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = context.read<AppState>();
@@ -71,49 +86,55 @@ class _RequestCard extends StatelessWidget {
     final List<Widget> actions = switch (booking.status) {
       BookingStatus.pending => [
           OutlinedButton(
-            onPressed: () {
-              state.reviewRequest(booking.id, approve: false);
-              _toast(context, 'Request rejected. Student notified.');
-            },
+            onPressed: () => _runAction(
+              context,
+              state.reviewRequest(booking.id, approve: false),
+              'Request rejected. Student notified.',
+            ),
             child: const Text('Reject'),
           ),
           FilledButton(
-            onPressed: () {
-              state.reviewRequest(booking.id, approve: true);
-              _toast(context, 'Request approved. Student notified.');
-            },
+            onPressed: () => _runAction(
+              context,
+              state.reviewRequest(booking.id, approve: true),
+              'Request approved. Student notified.',
+            ),
             child: const Text('Approve'),
           ),
         ],
       BookingStatus.cancelRequested => [
           OutlinedButton(
-            onPressed: () {
-              state.reviewCancellation(booking.id, approve: false);
-              _toast(context, 'Booking kept. Student notified.');
-            },
+            onPressed: () => _runAction(
+              context,
+              state.reviewCancellation(booking.id, approve: false),
+              'Booking kept. Student notified.',
+            ),
             child: const Text('Keep booking'),
           ),
           FilledButton(
-            onPressed: () {
-              state.reviewCancellation(booking.id, approve: true);
-              _toast(context, 'Cancellation approved. Student notified.');
-            },
+            onPressed: () => _runAction(
+              context,
+              state.reviewCancellation(booking.id, approve: true),
+              'Cancellation approved. Student notified.',
+            ),
             child: const Text('Approve cancellation'),
           ),
         ],
       BookingStatus.confirmed => [
           OutlinedButton(
-            onPressed: () {
-              state.cancelByInstructor(booking.id);
-              _toast(context, 'Booking canceled. Student notified.');
-            },
+            onPressed: () => _runAction(
+              context,
+              state.cancelByInstructor(booking.id),
+              'Booking canceled. Student notified.',
+            ),
             child: const Text('Cancel'),
           ),
           FilledButton(
-            onPressed: () {
-              state.markCompleted(booking.id);
-              _toast(context, 'Marked as completed.');
-            },
+            onPressed: () => _runAction(
+              context,
+              state.markCompleted(booking.id),
+              'Marked as completed.',
+            ),
             child: const Text('Mark completed'),
           ),
         ],

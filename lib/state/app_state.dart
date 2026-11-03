@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
+import 'package:hiraya/data/firebase_booking_repository.dart';
 
 import '../data/booking_repository.dart';
 import '../models/app_user.dart';
@@ -7,11 +10,16 @@ import '../models/slot.dart';
 
 /// App-wide state. Screens read data via `state.repo` after calling
 /// `context.watch<AppState>()`, and change data ONLY through the methods
-/// below (they call notifyListeners so every screen refreshes).
+/// below. Actions are async: `await` them inside try/catch in the screen.
+/// The screens refresh when the repository emits `changes` (and after every
+/// action, which covers the mock repository).
 class AppState extends ChangeNotifier {
-  AppState(this.repo);
+  AppState(this.repo) {
+    _sub = repo.changes.listen((_) => notifyListeners());
+  }
 
-  final BookingRepository repo;
+  final FirebaseBookingRepository repo;
+  StreamSubscription<void>? _sub;
 
   AppUser? _user;
   AppUser? get user => _user;
@@ -19,77 +27,87 @@ class AppState extends ChangeNotifier {
   /// The logged-in user. Only call this from screens shown after login.
   AppUser get me => _user!;
 
-  void login(AppUser u) {
-    _user = u;
+  bool _booting = true;
+
+  /// True until we know whether a saved session exists.
+  bool get booting => _booting;
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
+  }
+
+  // ---- auth ----
+
+  Future<void> restoreSession() async {
+    try {
+      _user = await repo.restoreSession();
+    } catch (_) {
+      _user = null;
+    }
+    _booting = false;
     notifyListeners();
   }
 
-  void logout() {
+  /// Throws [AuthFailure] with a user-friendly message.
+  Future<void> signIn(String email, String password) async {
+    _user = await repo.signIn(email, password);
+    notifyListeners();
+  }
+
+  Future<void> logout() async {
     _user = null;
     notifyListeners();
+    await repo.signOut();
   }
 
   int get unreadCount => _user == null ? 0 : repo.unreadCount(_user!.id);
 
+  Future<T> _run<T>(Future<T> Function() action) async {
+    try {
+      return await action();
+    } finally {
+      notifyListeners();
+    }
+  }
+
   // ---- student actions ----
 
-  Booking book(Slot slot, String topic, {String? fileName}) {
-    final b = repo.book(
-      studentId: me.id,
-      slotId: slot.id,
-      topic: topic,
-      fileName: fileName,
-    );
-    notifyListeners();
-    return b;
-  }
+  Future<Booking> book(Slot slot, String topic, {String? fileName}) =>
+      _run(() => repo.book(studentId: me.id, slotId: slot.id, topic: topic, fileName: fileName));
 
-  void reschedule(String bookingId, String newSlotId) {
-    repo.reschedule(bookingId, newSlotId);
-    notifyListeners();
-  }
+  Future<void> reschedule(String bookingId, String newSlotId) =>
+      _run(() => repo.reschedule(bookingId, newSlotId));
 
-  void requestCancellation(String bookingId) {
-    repo.requestCancellation(bookingId);
-    notifyListeners();
-  }
+  Future<void> requestCancellation(String bookingId) =>
+      _run(() => repo.requestCancellation(bookingId));
 
   // ---- instructor actions ----
 
-  void addSlot(DateTime start, DateTime end) {
-    repo.addSlot(me.id, start, end);
-    notifyListeners();
-  }
+  Future<void> addSlot(DateTime start, DateTime end) => _run(() => repo.addSlot(me.id, start, end));
 
-  void removeSlot(String slotId) {
-    repo.removeSlot(slotId);
-    notifyListeners();
-  }
+  Future<void> updateSlot(String slotId, DateTime start, DateTime end) =>
+      _run(() => repo.updateSlot(slotId, start, end));
 
-  void reviewRequest(String bookingId, {required bool approve}) {
-    repo.reviewRequest(bookingId, approve: approve);
-    notifyListeners();
-  }
+  Future<void> removeSlot(String slotId) => _run(() => repo.removeSlot(slotId));
 
-  void reviewCancellation(String bookingId, {required bool approve}) {
-    repo.reviewCancellation(bookingId, approve: approve);
-    notifyListeners();
-  }
+  Future<void> reviewRequest(String bookingId, {required bool approve}) =>
+      _run(() => repo.reviewRequest(bookingId, approve: approve));
 
-  void markCompleted(String bookingId) {
-    repo.markCompleted(bookingId);
-    notifyListeners();
-  }
+  Future<void> reviewCancellation(String bookingId, {required bool approve}) =>
+      _run(() => repo.reviewCancellation(bookingId, approve: approve));
 
-  void cancelByInstructor(String bookingId) {
-    repo.cancelByInstructor(bookingId);
-    notifyListeners();
-  }
+  Future<void> markCompleted(String bookingId) => _run(() => repo.markCompleted(bookingId));
+
+  Future<void> cancelByInstructor(String bookingId) =>
+      _run(() => repo.cancelByInstructor(bookingId));
 
   // ---- notifications ----
 
-  void markAllRead() {
-    repo.markAllRead(me.id);
+  Future<void> markAllRead() => _run(() => repo.markAllRead(me.id));
+  Future<void> signInDemo(AppUser user) async {
+    _user = await repo.signInDemo(user.id);
     notifyListeners();
   }
 }

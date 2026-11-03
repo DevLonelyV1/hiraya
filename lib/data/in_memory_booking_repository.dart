@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import '../core/format.dart';
 import '../models/app_notification.dart';
 import '../models/app_user.dart';
@@ -6,10 +8,20 @@ import '../models/slot.dart';
 import 'booking_repository.dart';
 
 /// In-memory implementation with demo data. Resets when the app restarts.
-class MockBookingRepository implements BookingRepository {
-  MockBookingRepository() {
+class InMemoryBookingRepository implements BookingRepository {
+  InMemoryBookingRepository() {
     _seed();
   }
+
+  static const _password = 'demo123';
+  static const _logins = {
+    'ana@demo.test': 's1',
+    'ben@demo.test': 's2',
+    'carla@demo.test': 's3',
+    'reyes@demo.test': 'i1',
+    'santos@demo.test': 'i2',
+    'delacruz@demo.test': 'i3',
+  };
 
   final List<AppUser> _users = const [
     AppUser(
@@ -43,9 +55,35 @@ class MockBookingRepository implements BookingRepository {
   final List<Slot> _slots = [];
   final List<Booking> _bookings = [];
   final List<AppNotification> _notifications = [];
+  final _changes = StreamController<void>.broadcast();
+  AppUser? _current;
   int _idCounter = 100;
 
   String _nextId(String prefix) => '$prefix${_idCounter++}';
+
+  // ---------------------------------------------------------------- auth
+
+  @override
+  Stream<void> get changes => _changes.stream;
+
+  @override
+  String? get loginHint => 'Demo logins (password: $_password):\n${_logins.keys.join(', ')}';
+
+  @override
+  Future<AppUser?> restoreSession() async => _current;
+
+  @override
+  Future<AppUser> signIn(String email, String password) async {
+    final id = _logins[email.trim().toLowerCase()];
+    if (id == null || password != _password) {
+      throw AuthFailure('Wrong email or password.');
+    }
+    _current = userById(id);
+    return _current!;
+  }
+
+  @override
+  Future<void> signOut() async => _current = null;
 
   // ---------------------------------------------------------------- seed
 
@@ -84,6 +122,7 @@ class MockBookingRepository implements BookingRepository {
   void _seedBooking(String studentId, String slotId, String topic, BookingStatus status) {
     final slot = slotById(slotId)!;
     slot.isLocked = true;
+    slot.inQueue = true;
     _bookings.add(
       Booking(
         id: _nextId('b'),
@@ -128,7 +167,7 @@ class MockBookingRepository implements BookingRepository {
   Slot? slotById(String id) => _slots.where((s) => s.id == id).firstOrNull;
 
   @override
-  Slot addSlot(String instructorId, DateTime start, DateTime end) {
+  Future<Slot> addSlot(String instructorId, DateTime start, DateTime end) async {
     final overlaps = _slots.any(
       (s) => s.instructorId == instructorId && s.start.isBefore(end) && start.isBefore(s.end),
     );
@@ -141,7 +180,28 @@ class MockBookingRepository implements BookingRepository {
   }
 
   @override
-  void removeSlot(String slotId) {
+  Future<void> updateSlot(String slotId, DateTime start, DateTime end) async {
+    final slot = slotById(slotId);
+    if (slot == null) return;
+    if (slot.isLocked) {
+      throw SlotUnavailableException('This slot is booked. Cancel the booking first.');
+    }
+    final overlaps = _slots.any(
+      (other) =>
+          other.id != slotId &&
+          other.instructorId == slot.instructorId &&
+          other.start.isBefore(end) &&
+          start.isBefore(other.end),
+    );
+    if (overlaps) {
+      throw SlotUnavailableException('That time overlaps an existing slot.');
+    }
+    slot.start = start;
+    slot.end = end;
+  }
+
+  @override
+  Future<void> removeSlot(String slotId) async {
     final slot = slotById(slotId);
     if (slot == null) return;
     if (slot.isLocked) {
@@ -171,15 +231,16 @@ class MockBookingRepository implements BookingRepository {
   }
 
   @override
-  Booking book({
+  Future<Booking> book({
     required String studentId,
     required String slotId,
     required String topic,
     String? fileName,
-  }) {
+  }) async {
     final slot = slotById(slotId);
     if (slot == null || slot.isLocked) throw SlotUnavailableException();
     slot.isLocked = true;
+    slot.inQueue = true;
     final booking = Booking(
       id: _nextId('b'),
       studentId: studentId,
@@ -202,7 +263,7 @@ class MockBookingRepository implements BookingRepository {
   }
 
   @override
-  void reschedule(String bookingId, String newSlotId) {
+  Future<void> reschedule(String bookingId, String newSlotId) async {
     final b = _booking(bookingId);
     if (b.status != BookingStatus.pending && b.status != BookingStatus.confirmed) {
       throw StateError('Only pending or confirmed bookings can be moved.');
@@ -210,8 +271,11 @@ class MockBookingRepository implements BookingRepository {
     final newSlot = slotById(newSlotId);
     if (newSlot == null || newSlot.isLocked) throw SlotUnavailableException();
 
-    slotById(b.slotId)?.isLocked = false;
+    final old = slotById(b.slotId);
+    old?.isLocked = false;
+    old?.inQueue = false;
     newSlot.isLocked = true;
+    newSlot.inQueue = true;
     b.slotId = newSlot.id;
     b.instructorId = newSlot.instructorId;
     b.status = BookingStatus.pending;
@@ -224,7 +288,7 @@ class MockBookingRepository implements BookingRepository {
   }
 
   @override
-  void requestCancellation(String bookingId) {
+  Future<void> requestCancellation(String bookingId) async {
     final b = _booking(bookingId);
     if (b.status != BookingStatus.pending && b.status != BookingStatus.confirmed) {
       throw StateError('This booking cannot be canceled.');
@@ -238,8 +302,13 @@ class MockBookingRepository implements BookingRepository {
 
   // --------------------------------------------------- instructor actions
 
+  void _release(Slot slot) {
+    slot.isLocked = false;
+    slot.inQueue = false;
+  }
+
   @override
-  void reviewRequest(String bookingId, {required bool approve}) {
+  Future<void> reviewRequest(String bookingId, {required bool approve}) async {
     final b = _booking(bookingId);
     if (b.status != BookingStatus.pending) return;
     final slot = slotById(b.slotId)!;
@@ -251,7 +320,7 @@ class MockBookingRepository implements BookingRepository {
       );
     } else {
       b.status = BookingStatus.rejected;
-      slot.isLocked = false;
+      _release(slot);
       _notify(
         b.studentId,
         '${_name(b.instructorId)} declined your request for ${fmtDateTime(slot.start)}.',
@@ -260,13 +329,13 @@ class MockBookingRepository implements BookingRepository {
   }
 
   @override
-  void reviewCancellation(String bookingId, {required bool approve}) {
+  Future<void> reviewCancellation(String bookingId, {required bool approve}) async {
     final b = _booking(bookingId);
     if (b.status != BookingStatus.cancelRequested) return;
     final slot = slotById(b.slotId)!;
     if (approve) {
       b.status = BookingStatus.canceled;
-      slot.isLocked = false;
+      _release(slot);
       _notify(b.studentId, 'Your cancellation for ${fmtDateTime(slot.start)} was approved.');
     } else {
       b.status = b.statusBeforeCancel;
@@ -278,22 +347,23 @@ class MockBookingRepository implements BookingRepository {
   }
 
   @override
-  void markCompleted(String bookingId) {
+  Future<void> markCompleted(String bookingId) async {
     final b = _booking(bookingId);
     if (b.status != BookingStatus.confirmed) return;
     b.status = BookingStatus.completed;
+    slotById(b.slotId)?.inQueue = false;
     _notify(b.studentId, 'Your consultation with ${_name(b.instructorId)} is marked completed.');
   }
 
   @override
-  void cancelByInstructor(String bookingId) {
+  Future<void> cancelByInstructor(String bookingId) async {
     final b = _booking(bookingId);
     if (b.status != BookingStatus.pending && b.status != BookingStatus.confirmed) {
       return;
     }
     final slot = slotById(b.slotId)!;
     b.status = BookingStatus.canceled;
-    slot.isLocked = false;
+    _release(slot);
     _notify(
       b.studentId,
       '${_name(b.instructorId)} canceled your consultation on ${fmtDateTime(slot.start)}.',
@@ -303,13 +373,15 @@ class MockBookingRepository implements BookingRepository {
   // --------------------------------------------------------------- queue
 
   @override
-  List<Booking> queueFor(String instructorId, DateTime day) {
+  List<Slot> queueFor(String instructorId, DateTime day) {
     final list = _bookings
         .where(
           (b) => b.instructorId == instructorId && b.status.isActive && sameDay(_slotStart(b), day),
         )
+        .map((b) => slotById(b.slotId))
+        .whereType<Slot>()
         .toList();
-    list.sort((a, b) => _slotStart(a).compareTo(_slotStart(b)));
+    list.sort((a, b) => a.start.compareTo(b.start));
     return list;
   }
 
@@ -317,8 +389,10 @@ class MockBookingRepository implements BookingRepository {
   int queuePosition(String bookingId) {
     final b = _booking(bookingId);
     if (!b.status.isActive) return 0;
-    final queue = queueFor(b.instructorId, _slotStart(b));
-    return queue.indexWhere((x) => x.id == b.id) + 1;
+    final slot = slotById(b.slotId);
+    if (slot == null) return 0;
+    final queue = queueFor(b.instructorId, slot.start);
+    return queue.indexWhere((s) => s.id == slot.id) + 1;
   }
 
   // -------------------------------------------------------- notifications
@@ -346,9 +420,15 @@ class MockBookingRepository implements BookingRepository {
       _notifications.where((n) => n.userId == userId && !n.read).length;
 
   @override
-  void markAllRead(String userId) {
+  Future<void> markAllRead(String userId) async {
     for (final n in _notifications) {
       if (n.userId == userId) n.read = true;
     }
+  }
+
+  @override
+  Future<void> seedFirestore() {
+    // TODO: implement seedFirestore
+    throw UnimplementedError();
   }
 }

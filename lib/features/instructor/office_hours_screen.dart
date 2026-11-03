@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import '../../core/format.dart';
 import '../../core/widgets.dart';
 import '../../data/booking_repository.dart';
+import '../../models/slot.dart';
 import '../../state/app_state.dart';
 
 class OfficeHoursScreen extends StatelessWidget {
@@ -49,11 +50,21 @@ class OfficeHoursScreen extends StatelessWidget {
                     subtitle: Text(fmtRange(s.start, s.end)),
                     trailing: s.isLocked
                         ? const Chip(label: Text('Booked'))
-                        : IconButton(
-                            tooltip: 'Remove slot',
-                            icon: const Icon(Icons.delete_outline),
-                            onPressed: () => _remove(context, s.id),
-                          ),
+                         : Wrap(
+                             spacing: 4,
+                             children: [
+                               IconButton(
+                                 tooltip: 'Edit slot',
+                                 icon: const Icon(Icons.edit_outlined),
+                                 onPressed: () => _editSlot(context, s),
+                               ),
+                               IconButton(
+                                 tooltip: 'Remove slot',
+                                 icon: const Icon(Icons.delete_outline),
+                                 onPressed: () => _remove(context, s.id),
+                               ),
+                             ],
+                           ),
                   ),
                 );
               },
@@ -69,29 +80,51 @@ class OfficeHoursScreen extends StatelessWidget {
     }
   }
 
-  Future<void> _addSlot(BuildContext context) async {
+  Future<DateTime?> _pickDateTime(BuildContext context, DateTime initial) async {
     final now = DateTime.now();
     final date = await showDatePicker(
       context: context,
-      initialDate: now.add(const Duration(days: 1)),
+      initialDate: initial.isBefore(now) ? now : initial,
       firstDate: now,
       lastDate: now.add(const Duration(days: 90)),
     );
-    if (date == null || !context.mounted) return;
+    if (date == null || !context.mounted) return null;
 
     final time = await showTimePicker(
       context: context,
-      initialTime: const TimeOfDay(hour: 9, minute: 0),
+      initialTime: TimeOfDay.fromDateTime(initial),
     );
-    if (time == null || !context.mounted) return;
+    if (time == null || !context.mounted) return null;
 
-    final start = DateTime(date.year, date.month, date.day, time.hour, time.minute);
+    return DateTime(date.year, date.month, date.day, time.hour, time.minute);
+  }
+
+  Future<void> _addSlot(BuildContext context) async {
+    final start = await _pickDateTime(context, DateTime.now().add(const Duration(days: 1)));
+    if (start == null || !context.mounted) return;
+
     try {
       context
           .read<AppState>()
           .addSlot(start, start.add(const Duration(minutes: 30)));
     } on SlotUnavailableException catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    }
+  }
+
+  Future<void> _editSlot(BuildContext context, Slot slot) async {
+    final start = await _pickDateTime(context, slot.start);
+    if (start == null || !context.mounted) return;
+    try {
+      await context.read<AppState>().updateSlot(
+            slot.id,
+            start,
+            start.add(slot.end.difference(slot.start)),
+          );
+    } on SlotUnavailableException catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+      }
     }
   }
 }
