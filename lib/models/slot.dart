@@ -16,8 +16,8 @@ class Slot {
 
   final String id;
   final String instructorId;
-  final DateTime start;
-  final DateTime end;
+  DateTime start;
+  DateTime end;
   bool isLocked;
   bool inQueue;
 }

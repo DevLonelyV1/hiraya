@@ -6,7 +6,6 @@ import 'package:hiraya/firebase_options.dart';
 import 'package:provider/provider.dart';
 
 import 'core/theme.dart';
-import 'data/mock_booking_repository.dart';
 import 'features/auth/login_screen.dart';
 import 'features/instructor/instructor_home.dart';
 import 'features/student/student_home.dart';

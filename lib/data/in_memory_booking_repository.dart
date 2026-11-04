@@ -8,9 +8,8 @@ import '../models/slot.dart';
 import 'booking_repository.dart';
 
 /// In-memory implementation with demo data. Resets when the app restarts.
-/// Run with `--dart-define=USE_MOCK=true` to use it.
-class MockBookingRepository implements BookingRepository {
-  MockBookingRepository() {
+class InMemoryBookingRepository implements BookingRepository {
+  InMemoryBookingRepository() {
     _seed();
   }
 
@@ -178,6 +177,27 @@ class MockBookingRepository implements BookingRepository {
     final slot = Slot(id: _nextId('slot_'), instructorId: instructorId, start: start, end: end);
     _slots.add(slot);
     return slot;
+  }
+
+  @override
+  Future<void> updateSlot(String slotId, DateTime start, DateTime end) async {
+    final slot = slotById(slotId);
+    if (slot == null) return;
+    if (slot.isLocked) {
+      throw SlotUnavailableException('This slot is booked. Cancel the booking first.');
+    }
+    final overlaps = _slots.any(
+      (other) =>
+          other.id != slotId &&
+          other.instructorId == slot.instructorId &&
+          other.start.isBefore(end) &&
+          start.isBefore(other.end),
+    );
+    if (overlaps) {
+      throw SlotUnavailableException('That time overlaps an existing slot.');
+    }
+    slot.start = start;
+    slot.end = end;
   }
 
   @override
