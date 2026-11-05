@@ -8,6 +8,7 @@ queue position, and get notified. Built for STI Caloocan.
 **Targets:** Android emulator (main), Flutter web in a phone-sized window (backup).
 
 **Team lead:** Emanuel Czire C. Haber  |  **Group:** Hiraya
+**Developer:** Adhrian Joaquin A. Penaflor 
 
 ---
 
