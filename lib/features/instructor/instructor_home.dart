@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 
 import '../../models/booking.dart';
 import '../../state/app_state.dart';
+import '../calendar/appointment_calendar_screen.dart';
 import '../notifications/notifications_screen.dart';
 import 'office_hours_screen.dart';
 import 'review_requests_screen.dart';
@@ -23,16 +24,24 @@ class InstructorHome extends StatefulWidget {
 class _InstructorHomeState extends State<InstructorHome> {
   int _index = 0;
 
-  static const _titles = ['Requests', 'Office hours', 'Notifications'];
+  static const _titles = [
+    'Requests',
+    'Office hours',
+    'Calendar',
+    'Notifications',
+  ];
 
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
     final todo = state.repo
         .bookingsForInstructor(state.me.id)
-        .where((b) =>
-            b.status == BookingStatus.pending ||
-            b.status == BookingStatus.cancelRequested)
+        .where(
+          (b) =>
+              b.status == BookingStatus.pending ||
+              b.status == BookingStatus.cancelRequested ||
+              b.status == BookingStatus.changeRequested,
+        )
         .length;
 
     return Scaffold(
@@ -51,6 +60,7 @@ class _InstructorHomeState extends State<InstructorHome> {
         children: const [
           ReviewRequestsScreen(),
           OfficeHoursScreen(),
+          AppointmentCalendarScreen(),
           NotificationsScreen(),
         ],
       ),
@@ -69,6 +79,10 @@ class _InstructorHomeState extends State<InstructorHome> {
           const NavigationDestination(
             icon: Icon(Icons.schedule),
             label: 'Office hours',
+          ),
+          const NavigationDestination(
+            icon: Icon(Icons.calendar_month_outlined),
+            label: 'Calendar',
           ),
           NavigationDestination(
             icon: Badge(

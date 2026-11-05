@@ -1,11 +1,12 @@
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
-import 'package:hiraya/data/firebase_booking_repository.dart';
 import 'package:hiraya/firebase_options.dart';
 import 'package:provider/provider.dart';
 
 import 'core/theme.dart';
+import 'data/booking_repository.dart';
+import 'data/firebase_booking_repository.dart';
 import 'data/mock_booking_repository.dart';
 import 'features/auth/login_screen.dart';
 import 'features/instructor/instructor_home.dart';
@@ -13,16 +14,29 @@ import 'features/student/student_home.dart';
 import 'models/app_user.dart';
 import 'state/app_state.dart';
 
+const _useMock = bool.fromEnvironment('USE_MOCK');
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  final BookingRepository repo;
+  if (_useMock) {
+    repo = MockBookingRepository();
+  } else {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+    final firebaseRepo = FirebaseBookingRepository();
+    await firebaseRepo.loadDemoUsers();
+    repo = firebaseRepo;
+  }
 
-  final repo = FirebaseBookingRepository();
-
-  await repo.loadDemoUsers();
-
-  runApp(ChangeNotifierProvider(create: (_) => AppState(repo), child: const ConsultApp()));
+  runApp(
+    ChangeNotifierProvider(
+      create: (_) => AppState(repo),
+      child: const ConsultApp(),
+    ),
+  );
 }
 
 class ConsultApp extends StatelessWidget {
@@ -41,7 +55,10 @@ class ConsultApp extends StatelessWidget {
         return ColoredBox(
           color: const Color(0xFFE4E9F2),
           child: Center(
-            child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 430), child: child),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 430),
+              child: child,
+            ),
           ),
         );
       },
@@ -57,6 +74,8 @@ class RootGate extends StatelessWidget {
   Widget build(BuildContext context) {
     final user = context.watch<AppState>().user;
     if (user == null) return const LoginScreen();
-    return user.role == UserRole.student ? const StudentHome() : const InstructorHome();
+    return user.role == UserRole.student
+        ? const StudentHome()
+        : const InstructorHome();
   }
 }

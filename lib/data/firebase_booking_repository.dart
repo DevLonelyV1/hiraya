@@ -8,6 +8,8 @@ import '../core/format.dart';
 import '../models/app_notification.dart';
 import '../models/app_user.dart';
 import '../models/booking.dart';
+import '../models/booking_change_policy.dart';
+import '../models/instructor_availability.dart';
 import '../models/slot.dart';
 import 'booking_repository.dart';
 
@@ -34,6 +36,7 @@ class FirebaseBookingRepository implements BookingRepository {
   List<Slot> _slots = [];
   List<Booking> _bookings = [];
   List<AppNotification> _notifications = [];
+  List<InstructorAvailability> _availability = [];
 
   @override
   Stream<void> get changes => _changes.stream;
@@ -58,7 +61,10 @@ class FirebaseBookingRepository implements BookingRepository {
   @override
   Future<AppUser> signIn(String email, String password) async {
     try {
-      final cred = await _auth.signInWithEmailAndPassword(email: email.trim(), password: password);
+      final cred = await _auth.signInWithEmailAndPassword(
+        email: email.trim(),
+        password: password,
+      );
       return await _loadProfile(cred.user!);
     } on FirebaseAuthException catch (e) {
       throw AuthFailure(_authMessage(e.code));
@@ -78,7 +84,8 @@ class FirebaseBookingRepository implements BookingRepository {
     'invalid-email' => 'Wrong email or password.',
     'user-disabled' => 'This account has been disabled.',
     'too-many-requests' => 'Too many attempts. Try again later.',
-    'network-request-failed' => 'No connection. Check your internet and try again.',
+    'network-request-failed' =>
+      'No connection. Check your internet and try again.',
     _ => 'Could not sign in ($code).',
   };
 
@@ -100,13 +107,25 @@ class FirebaseBookingRepository implements BookingRepository {
   Future<void> _startSync(AppUser me) async {
     await _stopSync();
     final byMe = me.role == UserRole.student ? 'studentId' : 'instructorId';
-    await Future.wait([
+    final listeners = <Future<void>>[
       _listen(_db.collection('users'), (snap) {
         _users = snap.docs
             .where((d) => d.data()['active'] != false)
             .map(_userFrom)
             .whereType<AppUser>()
             .toList();
+        _availability = [
+          for (final doc in snap.docs)
+            if (doc.data()['role'] == 'instructor')
+              if (doc.data()['availabilitySchedules']
+                  case final Map<String, dynamic> schedules)
+                for (final entry in schedules.entries)
+                  if (int.tryParse(entry.key) case final int weekday)
+                    if (entry.value case final Map<String, dynamic> values)
+                      if (weekday >= DateTime.monday &&
+                          weekday <= DateTime.sunday)
+                        _availabilityFrom(doc.id, weekday, values),
+        ];
       }),
       _listen(_db.collection('slots'), (snap) {
         _slots = snap.docs.map(_slotFrom).toList();
@@ -114,10 +133,14 @@ class FirebaseBookingRepository implements BookingRepository {
       _listen(_db.collection('bookings').where(byMe, isEqualTo: me.id), (snap) {
         _bookings = snap.docs.map(_bookingFrom).toList();
       }),
-      _listen(_db.collection('notifications').where('userId', isEqualTo: me.id), (snap) {
-        _notifications = snap.docs.map(_notificationFrom).toList();
-      }),
-    ]);
+      _listen(
+        _db.collection('notifications').where('userId', isEqualTo: me.id),
+        (snap) {
+          _notifications = snap.docs.map(_notificationFrom).toList();
+        },
+      ),
+    ];
+    await Future.wait(listeners);
   }
 
   Future<void> _stopSync() async {
@@ -129,6 +152,7 @@ class FirebaseBookingRepository implements BookingRepository {
     _slots = [];
     _bookings = [];
     _notifications = [];
+    _availability = [];
   }
 
   /// Subscribes to a query. The returned future completes after the first
@@ -191,15 +215,46 @@ class FirebaseBookingRepository implements BookingRepository {
   Booking _bookingFrom(DocumentSnapshot<Map<String, dynamic>> d) {
     final m = d.data()!;
     return Booking(
-      id: d.id,
-      studentId: m['studentId'] as String,
-      instructorId: m['instructorId'] as String,
-      slotId: m['slotId'] as String,
-      topic: m['topic'] as String? ?? '',
-      fileName: m['fileName'] as String?,
-      createdAt: (m['createdAt'] as Timestamp).toDate(),
-      status: _status(m['status'], BookingStatus.pending),
-    )..statusBeforeCancel = _status(m['statusBeforeCancel'], BookingStatus.confirmed);
+        id: d.id,
+        studentId: m['studentId'] as String,
+        instructorId: m['instructorId'] as String,
+        slotId: m['slotId'] as String,
+        topic: m['topic'] as String? ?? '',
+        fileName: m['fileName'] as String?,
+        createdAt: (m['createdAt'] as Timestamp).toDate(),
+        status: _status(m['status'], BookingStatus.pending),
+      )
+      ..statusBeforeCancel = _status(
+        m['statusBeforeCancel'],
+        BookingStatus.confirmed,
+      )
+      ..changeRequestedBy = m['changeRequestedBy'] as String?
+      ..changeReason = m['changeReason'] as String?
+      ..proposedSlotId = m['proposedSlotId'] as String?
+      ..statusBeforeChange = _status(
+        m['statusBeforeChange'],
+        BookingStatus.confirmed,
+      );
+  }
+
+  InstructorAvailability _availabilityFrom(
+    String instructorId,
+    int weekday,
+    Map<String, dynamic> data,
+  ) {
+    return InstructorAvailability(
+      instructorId: instructorId,
+      weekday: weekday,
+      isAvailable: data['isAvailable'] as bool? ?? false,
+      startMinute:
+          data['startMinute'] as int? ??
+          InstructorAvailability.defaultStartMinute,
+      endMinute:
+          data['endMinute'] as int? ?? InstructorAvailability.defaultEndMinute,
+      slotMinutes:
+          data['slotMinutes'] as int? ??
+          InstructorAvailability.defaultSlotMinutes,
+    );
   }
 
   AppNotification _notificationFrom(DocumentSnapshot<Map<String, dynamic>> d) {
@@ -219,7 +274,8 @@ class FirebaseBookingRepository implements BookingRepository {
   List<AppUser> get users => List.unmodifiable(_users);
 
   @override
-  List<AppUser> get instructors => _users.where((u) => u.role == UserRole.instructor).toList();
+  List<AppUser> get instructors =>
+      _users.where((u) => u.role == UserRole.instructor).toList();
 
   @override
   AppUser? userById(String id) => _users.where((u) => u.id == id).firstOrNull;
@@ -228,7 +284,8 @@ class FirebaseBookingRepository implements BookingRepository {
 
   // --------------------------------------------------------------- slots
 
-  DocumentReference<Map<String, dynamic>> _slotRef(String id) => _db.collection('slots').doc(id);
+  DocumentReference<Map<String, dynamic>> _slotRef(String id) =>
+      _db.collection('slots').doc(id);
 
   DocumentReference<Map<String, dynamic>> _bookingRef(String id) =>
       _db.collection('bookings').doc(id);
@@ -249,9 +306,50 @@ class FirebaseBookingRepository implements BookingRepository {
   Slot? slotById(String id) => _slots.where((s) => s.id == id).firstOrNull;
 
   @override
-  Future<Slot> addSlot(String instructorId, DateTime start, DateTime end) async {
+  List<InstructorAvailability> availabilityFor(String instructorId) {
+    final savedByDay = {
+      for (final entry in _availability)
+        if (entry.instructorId == instructorId) entry.weekday: entry,
+    };
+    return List.unmodifiable([
+      for (final fallback in InstructorAvailability.defaults(instructorId))
+        savedByDay[fallback.weekday] ?? fallback,
+    ]);
+  }
+
+  @override
+  Future<void> saveAvailability(InstructorAvailability availability) async {
+    final ref = _db.collection('users').doc(availability.instructorId);
+    await ref.update({
+      'availabilitySchedules.${availability.weekday}': {
+        'isAvailable': availability.isAvailable,
+        'startMinute': availability.startMinute,
+        'endMinute': availability.endMinute,
+        'slotMinutes': availability.slotMinutes,
+      },
+    });
+    _availability = [
+      ..._availability.where(
+        (entry) =>
+            entry.instructorId != availability.instructorId ||
+            entry.weekday != availability.weekday,
+      ),
+      availability,
+    ]..sort((a, b) => a.weekday.compareTo(b.weekday));
+    _changes.add(null);
+  }
+
+  @override
+  Future<Slot> addSlot(
+    String instructorId,
+    DateTime start,
+    DateTime end,
+  ) async {
     final overlaps = _slots.any(
-      (s) => s.instructorId == instructorId && s.start.isBefore(end) && start.isBefore(s.end),
+      (s) =>
+          s.instructorId == instructorId &&
+          s.start.isBefore(end) &&
+          start.isBefore(s.end),
     );
     if (overlaps) {
       throw SlotUnavailableException('That time overlaps an existing slot.');
@@ -264,7 +362,15 @@ class FirebaseBookingRepository implements BookingRepository {
       'isLocked': false,
       'inQueue': false,
     });
-    return Slot(id: ref.id, instructorId: instructorId, start: start, end: end);
+    final slot = Slot(
+      id: ref.id,
+      instructorId: instructorId,
+      start: start,
+      end: end,
+    );
+    _slots.add(slot);
+    _changes.add(null);
+    return slot;
   }
 
   @override
@@ -272,9 +378,13 @@ class FirebaseBookingRepository implements BookingRepository {
     final slot = slotById(slotId);
     if (slot == null) return;
     if (slot.isLocked) {
-      throw SlotUnavailableException('This slot is booked. Cancel the booking first.');
+      throw SlotUnavailableException(
+        'This slot is booked. Cancel the booking first.',
+      );
     }
     await _slotRef(slotId).delete();
+    _slots.removeWhere((entry) => entry.id == slotId);
+    _changes.add(null);
   }
 
   // ------------------------------------------------------------ bookings
@@ -292,7 +402,9 @@ class FirebaseBookingRepository implements BookingRepository {
 
   @override
   List<Booking> bookingsForInstructor(String instructorId) {
-    final list = _bookings.where((b) => b.instructorId == instructorId).toList();
+    final list = _bookings
+        .where((b) => b.instructorId == instructorId)
+        .toList();
     list.sort((a, b) => _slotStart(a).compareTo(_slotStart(b)));
     return list;
   }
@@ -304,7 +416,8 @@ class FirebaseBookingRepository implements BookingRepository {
     'createdAt': Timestamp.fromDate(DateTime.now().toUtc()),
   };
 
-  DocumentReference<Map<String, dynamic>> _newNotifRef() => _db.collection('notifications').doc();
+  DocumentReference<Map<String, dynamic>> _newNotifRef() =>
+      _db.collection('notifications').doc();
 
   /// Frees a slot (booking rejected, canceled or moved away).
   Map<String, dynamic> get _freed => {'isLocked': false, 'inQueue': false};
@@ -368,64 +481,191 @@ class FirebaseBookingRepository implements BookingRepository {
   }
 
   @override
-  Future<void> reschedule(String bookingId, String newSlotId) async {
-    final b = _booking(bookingId);
-    if (b.status != BookingStatus.pending && b.status != BookingStatus.confirmed) {
-      throw StateError('Only pending or confirmed bookings can be moved.');
-    }
-    final newRef = _slotRef(newSlotId);
+  Future<void> requestBookingChange({
+    required String bookingId,
+    required String requesterId,
+    required String reason,
+    String? proposedSlotId,
+  }) async {
+    final bookingRef = _bookingRef(bookingId);
+    final proposedSlotRef = proposedSlotId == null
+        ? null
+        : _slotRef(proposedSlotId);
+    final reasonError = bookingChangeReasonError(reason);
+    if (reasonError != null) throw StateError(reasonError);
 
     await _db.runTransaction((tx) async {
-      final snap = await tx.get(newRef);
-      if (!snap.exists || snap.data()!['isLocked'] == true) {
-        throw SlotUnavailableException();
+      final bookingSnap = await tx.get(bookingRef);
+      if (!bookingSnap.exists) {
+        throw StateError('The appointment could not be found.');
       }
-      final newSlot = _slotFrom(snap);
-      tx.update(_slotRef(b.slotId), _freed);
-      tx.update(newRef, {'isLocked': true, 'inQueue': true});
-      tx.update(_bookingRef(b.id), {
-        'slotId': newSlotId,
-        'instructorId': newSlot.instructorId,
-        'status': BookingStatus.pending.name,
+      final booking = _bookingFrom(bookingSnap);
+      final currentSlotRef = _slotRef(booking.slotId);
+      final currentSlotSnap = await tx.get(currentSlotRef);
+      final proposedSlotSnap = proposedSlotRef == null
+          ? null
+          : await tx.get(proposedSlotRef);
+      if (!currentSlotSnap.exists) {
+        throw StateError('The appointment could not be found.');
+      }
+
+      if (booking.status != BookingStatus.pending &&
+          booking.status != BookingStatus.confirmed) {
+        throw StateError('This booking cannot be changed right now.');
+      }
+      if (requesterId != booking.studentId &&
+          requesterId != booking.instructorId) {
+        throw StateError(
+          'Only the student or instructor can request a change.',
+        );
+      }
+      final currentSlot = _slotFrom(currentSlotSnap);
+      if (!isBeforeBookingChangeCutoff(currentSlot.start)) {
+        throw StateError(
+          'Changes must be requested at least 3 hours before the appointment.',
+        );
+      }
+
+      Slot? proposedSlot;
+      if (proposedSlotId != null) {
+        if (proposedSlotSnap == null || !proposedSlotSnap.exists) {
+          throw SlotUnavailableException(
+            'That instructor time is no longer available.',
+          );
+        }
+        proposedSlot = _slotFrom(proposedSlotSnap);
+        if (proposedSlot.instructorId != booking.instructorId ||
+            proposedSlot.isLocked ||
+            !isBeforeBookingChangeCutoff(proposedSlot.start)) {
+          throw SlotUnavailableException(
+            'That instructor time is no longer available.',
+          );
+        }
+        tx.update(proposedSlotRef!, {'isLocked': true, 'inQueue': false});
+      }
+
+      final recipientId = requesterId == booking.studentId
+          ? booking.instructorId
+          : booking.studentId;
+      final action = proposedSlot == null
+          ? 'cancel the appointment'
+          : 'reschedule to ${fmtDateTime(proposedSlot.start)}';
+      final normalizedReason = reason.trim();
+      tx.update(bookingRef, {
+        'statusBeforeChange': booking.status.name,
+        'status': BookingStatus.changeRequested.name,
+        'changeRequestedBy': requesterId,
+        'changeReason': normalizedReason,
+        'proposedSlotId': proposedSlotId,
       });
       tx.set(
         _newNotifRef(),
         _notif(
-          newSlot.instructorId,
-          '${_name(b.studentId)} rescheduled to ${fmtDateTime(newSlot.start)}. Please review.',
+          recipientId,
+          '${_name(requesterId)} requested to $action. Reason: $normalizedReason',
         ),
       );
       tx.set(
         _newNotifRef(),
         _notif(
-          b.studentId,
-          'Booking moved to ${fmtDateTime(newSlot.start)}. Waiting for approval.',
+          requesterId,
+          'Your request to $action was sent to ${_name(recipientId)} for approval.',
         ),
       );
     });
   }
 
   @override
-  Future<void> requestCancellation(String bookingId) async {
-    final b = _booking(bookingId);
-    if (b.status != BookingStatus.pending && b.status != BookingStatus.confirmed) {
-      throw StateError('This booking cannot be canceled.');
-    }
-    final when = fmtDateTime(slotById(b.slotId)!.start);
-    final batch = _db.batch()
-      ..update(_bookingRef(b.id), {
-        'statusBeforeCancel': b.status.name,
-        'status': BookingStatus.cancelRequested.name,
-      })
-      ..set(
+  Future<void> reviewBookingChange({
+    required String bookingId,
+    required String reviewerId,
+    required bool approve,
+  }) async {
+    final bookingRef = _bookingRef(bookingId);
+
+    await _db.runTransaction((tx) async {
+      final bookingSnap = await tx.get(bookingRef);
+      if (!bookingSnap.exists) {
+        throw StateError('The appointment could not be found.');
+      }
+      final booking = _bookingFrom(bookingSnap);
+      final currentSlotRef = _slotRef(booking.slotId);
+      final currentSlotSnap = await tx.get(currentSlotRef);
+      if (!currentSlotSnap.exists) {
+        throw StateError('The appointment could not be found.');
+      }
+      if (booking.status != BookingStatus.changeRequested) {
+        throw StateError('There is no pending booking change to review.');
+      }
+      if ((reviewerId != booking.studentId &&
+              reviewerId != booking.instructorId) ||
+          reviewerId == booking.changeRequestedBy) {
+        throw StateError('Only the other participant can review this request.');
+      }
+
+      final currentSlot = _slotFrom(currentSlotSnap);
+      final proposedSlotRef = booking.proposedSlotId == null
+          ? null
+          : _slotRef(booking.proposedSlotId!);
+      final proposedSlotSnap = proposedSlotRef == null
+          ? null
+          : await tx.get(proposedSlotRef);
+      if (booking.proposedSlotId != null &&
+          (proposedSlotSnap == null || !proposedSlotSnap.exists)) {
+        throw StateError('The proposed appointment slot could not be found.');
+      }
+      final proposedSlot = proposedSlotSnap == null
+          ? null
+          : _slotFrom(proposedSlotSnap);
+      if (approve &&
+          (!isBeforeBookingChangeCutoff(currentSlot.start) ||
+              (proposedSlot != null &&
+                  !isBeforeBookingChangeCutoff(proposedSlot.start)))) {
+        throw StateError(
+          'The request can only be approved at least 3 hours before the appointment.',
+        );
+      }
+
+      final requesterId = booking.changeRequestedBy!;
+      final action = proposedSlot == null
+          ? 'cancellation'
+          : 'reschedule to ${fmtDateTime(proposedSlot.start)}';
+      final response = approve ? 'approved' : 'declined';
+      final update = <String, Object?>{
+        'changeRequestedBy': null,
+        'changeReason': null,
+        'proposedSlotId': null,
+      };
+      if (approve) {
+        if (proposedSlot == null) {
+          update['status'] = BookingStatus.canceled.name;
+          tx.update(currentSlotRef, _freed);
+        } else {
+          update
+            ..['slotId'] = proposedSlot.id
+            ..['status'] = BookingStatus.confirmed.name;
+          tx.update(currentSlotRef, _freed);
+          tx.update(proposedSlotRef!, {'isLocked': true, 'inQueue': true});
+        }
+      } else {
+        update['status'] = booking.statusBeforeChange.name;
+        if (proposedSlotRef != null) {
+          tx.update(proposedSlotRef, _freed);
+        }
+      }
+      tx.update(bookingRef, update);
+      tx.set(
         _newNotifRef(),
-        _notif(b.instructorId, '${_name(b.studentId)} requested to cancel the $when consultation.'),
-      )
-      ..set(
-        _newNotifRef(),
-        _notif(b.studentId, 'Cancellation requested. Waiting for instructor review.'),
+        _notif(
+          requesterId,
+          '${_name(reviewerId)} $response your $action request.',
+        ),
       );
-    await batch.commit();
+      tx.set(
+        _newNotifRef(),
+        _notif(reviewerId, 'You $response the $action request.'),
+      );
+    });
   }
 
   // --------------------------------------------------- instructor actions
@@ -462,7 +702,10 @@ class FirebaseBookingRepository implements BookingRepository {
   }
 
   @override
-  Future<void> reviewCancellation(String bookingId, {required bool approve}) async {
+  Future<void> reviewCancellation(
+    String bookingId, {
+    required bool approve,
+  }) async {
     final b = _booking(bookingId);
     if (b.status != BookingStatus.cancelRequested) return;
     final slot = slotById(b.slotId)!;
@@ -473,7 +716,17 @@ class FirebaseBookingRepository implements BookingRepository {
         ..update(_slotRef(slot.id), _freed)
         ..set(
           _newNotifRef(),
-          _notif(b.studentId, 'Your cancellation for ${fmtDateTime(slot.start)} was approved.'),
+          _notif(
+            b.studentId,
+            '${_name(b.instructorId)} approved your cancellation for ${fmtDateTime(slot.start)}.',
+          ),
+        )
+        ..set(
+          _newNotifRef(),
+          _notif(
+            b.instructorId,
+            'You approved ${_name(b.studentId)} cancellation for ${fmtDateTime(slot.start)}.',
+          ),
         );
     } else {
       batch
@@ -482,7 +735,14 @@ class FirebaseBookingRepository implements BookingRepository {
           _newNotifRef(),
           _notif(
             b.studentId,
-            'Your cancellation for ${fmtDateTime(slot.start)} was not approved. The booking stays.',
+            '${_name(b.instructorId)} declined your cancellation for ${fmtDateTime(slot.start)}. The booking stays.',
+          ),
+        )
+        ..set(
+          _newNotifRef(),
+          _notif(
+            b.instructorId,
+            'You declined ${_name(b.studentId)} cancellation for ${fmtDateTime(slot.start)}.',
           ),
         );
     }
@@ -498,24 +758,9 @@ class FirebaseBookingRepository implements BookingRepository {
       ..update(_slotRef(b.slotId), {'inQueue': false})
       ..set(
         _newNotifRef(),
-        _notif(b.studentId, 'Your consultation with ${_name(b.instructorId)} is marked completed.'),
-      );
-    await batch.commit();
-  }
-
-  @override
-  Future<void> cancelByInstructor(String bookingId) async {
-    final b = _booking(bookingId);
-    if (b.status != BookingStatus.pending && b.status != BookingStatus.confirmed) return;
-    final slot = slotById(b.slotId)!;
-    final batch = _db.batch()
-      ..update(_bookingRef(b.id), {'status': BookingStatus.canceled.name})
-      ..update(_slotRef(slot.id), _freed)
-      ..set(
-        _newNotifRef(),
         _notif(
           b.studentId,
-          '${_name(b.instructorId)} canceled your consultation on ${fmtDateTime(slot.start)}.',
+          'Your consultation with ${_name(b.instructorId)} is marked completed.',
         ),
       );
     await batch.commit();
@@ -526,7 +771,12 @@ class FirebaseBookingRepository implements BookingRepository {
   @override
   List<Slot> queueFor(String instructorId, DateTime day) {
     final list = _slots
-        .where((s) => s.instructorId == instructorId && s.inQueue && sameDay(s.start, day))
+        .where(
+          (s) =>
+              s.instructorId == instructorId &&
+              s.inQueue &&
+              sameDay(s.start, day),
+        )
         .toList();
     list.sort((a, b) => a.start.compareTo(b.start));
     return list;
@@ -557,7 +807,9 @@ class FirebaseBookingRepository implements BookingRepository {
 
   @override
   Future<void> markAllRead(String userId) async {
-    final unread = _notifications.where((n) => n.userId == userId && !n.read).toList();
+    final unread = _notifications
+        .where((n) => n.userId == userId && !n.read)
+        .toList();
     if (unread.isEmpty) return;
     final batch = _db.batch();
     for (final n in unread) {
@@ -621,29 +873,49 @@ class FirebaseBookingRepository implements BookingRepository {
 
     for (final u in demoUsers) {
       final ref = _db.collection('users').doc(u['id'] as String);
-      batch.set(ref, u, SetOptions(merge: true));
+      final data = Map<String, dynamic>.from(u);
+      if (u['role'] == 'instructor') {
+        data['availabilitySchedules'] = {
+          for (final schedule in InstructorAvailability.defaults(
+            u['id'] as String,
+          ))
+            '${schedule.weekday}': {
+              'isAvailable': schedule.isAvailable,
+              'startMinute': schedule.startMinute,
+              'endMinute': schedule.endMinute,
+              'slotMinutes': schedule.slotMinutes,
+            },
+        };
+      }
+      batch.set(ref, data, SetOptions(merge: true));
     }
 
-    // 2. Seed Slots (similar to Mock repository logic for the next few days)
+    // 2. Seed the default four-week weekday schedule.
     final today = DateTime.now();
-    const startTimes = [
-      [9, 0],
-      [9, 30],
-      [10, 0],
-      [13, 0],
-      [13, 30],
-      [14, 0],
-    ];
-
     final instructorIds = ['i1', 'i2', 'i3'];
     for (final instId in instructorIds) {
-      for (var d = 1; d <= 4; d++) {
-        final day = DateTime(today.year, today.month, today.day + d);
-        for (var i = 0; i < startTimes.length; i++) {
-          final start = DateTime(day.year, day.month, day.day, startTimes[i][0], startTimes[i][1]);
-          final end = start.add(const Duration(minutes: 30));
+      for (var dayOffset = 1; dayOffset <= 28; dayOffset++) {
+        final day = DateTime(today.year, today.month, today.day + dayOffset);
+        final schedule = InstructorAvailability.defaults(
+          instId,
+        )[day.weekday - 1];
+        if (!schedule.isAvailable) continue;
 
-          final slotId = 'slot_${instId}_${d}_$i';
+        for (
+          var minute = schedule.startMinute;
+          minute + schedule.slotMinutes <= schedule.endMinute;
+          minute += schedule.slotMinutes
+        ) {
+          final start = DateTime(
+            day.year,
+            day.month,
+            day.day,
+            minute ~/ 60,
+            minute % 60,
+          );
+          final end = start.add(Duration(minutes: schedule.slotMinutes));
+
+          final slotId = 'slot_${instId}_${dayOffset}_$minute';
           final slotRef = _db.collection('slots').doc(slotId);
 
           batch.set(slotRef, {
@@ -675,6 +947,7 @@ class FirebaseBookingRepository implements BookingRepository {
     debugPrint('Loaded ${_users.length} users');
   }
 
+  @override
   Future<AppUser> signInDemo(String userId) async {
     try {
       // Find the selected user in Firestore.

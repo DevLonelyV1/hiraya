@@ -4,6 +4,8 @@ import '../core/format.dart';
 import '../models/app_notification.dart';
 import '../models/app_user.dart';
 import '../models/booking.dart';
+import '../models/booking_change_policy.dart';
+import '../models/instructor_availability.dart';
 import '../models/slot.dart';
 import 'booking_repository.dart';
 
@@ -43,8 +45,18 @@ class MockBookingRepository implements BookingRepository {
       role: UserRole.student,
       department: 'BS Information Technology',
     ),
-    AppUser(id: 'i1', name: 'Prof. Reyes', role: UserRole.instructor, department: 'IT Department'),
-    AppUser(id: 'i2', name: 'Prof. Santos', role: UserRole.instructor, department: 'IT Department'),
+    AppUser(
+      id: 'i1',
+      name: 'Prof. Reyes',
+      role: UserRole.instructor,
+      department: 'IT Department',
+    ),
+    AppUser(
+      id: 'i2',
+      name: 'Prof. Santos',
+      role: UserRole.instructor,
+      department: 'IT Department',
+    ),
     AppUser(
       id: 'i3',
       name: 'Prof. Dela Cruz',
@@ -56,6 +68,7 @@ class MockBookingRepository implements BookingRepository {
   final List<Slot> _slots = [];
   final List<Booking> _bookings = [];
   final List<AppNotification> _notifications = [];
+  final Map<String, InstructorAvailability> _availability = {};
   final _changes = StreamController<void>.broadcast();
   AppUser? _current;
   int _idCounter = 100;
@@ -68,7 +81,8 @@ class MockBookingRepository implements BookingRepository {
   Stream<void> get changes => _changes.stream;
 
   @override
-  String? get loginHint => 'Demo logins (password: $_password):\n${_logins.keys.join(', ')}';
+  String? get loginHint =>
+      'Demo logins (password: $_password):\n${_logins.keys.join(', ')}';
 
   @override
   Future<AppUser?> restoreSession() async => _current;
@@ -84,31 +98,48 @@ class MockBookingRepository implements BookingRepository {
   }
 
   @override
+  Future<AppUser> signInDemo(String userId) async {
+    final user = userById(userId);
+    if (user == null) throw AuthFailure('Demo account not found.');
+    _current = user;
+    return user;
+  }
+
+  @override
   Future<void> signOut() async => _current = null;
 
   // ---------------------------------------------------------------- seed
 
   void _seed() {
     final today = DateTime.now();
-    const startTimes = [
-      [9, 0],
-      [9, 30],
-      [10, 0],
-      [13, 0],
-      [13, 30],
-      [14, 0],
-    ];
     for (final inst in instructors) {
-      for (var d = 1; d <= 4; d++) {
-        final day = DateTime(today.year, today.month, today.day + d);
-        for (var i = 0; i < startTimes.length; i++) {
-          final start = DateTime(day.year, day.month, day.day, startTimes[i][0], startTimes[i][1]);
+      for (final schedule in InstructorAvailability.defaults(inst.id)) {
+        _availability['${inst.id}_${schedule.weekday}'] = schedule;
+      }
+
+      for (var dayOffset = 1; dayOffset <= 28; dayOffset++) {
+        final day = DateTime(today.year, today.month, today.day + dayOffset);
+        final schedule = _availability['${inst.id}_${day.weekday}']!;
+        if (!schedule.isAvailable) continue;
+
+        for (
+          var minute = schedule.startMinute;
+          minute + schedule.slotMinutes <= schedule.endMinute;
+          minute += schedule.slotMinutes
+        ) {
+          final start = DateTime(
+            day.year,
+            day.month,
+            day.day,
+            minute ~/ 60,
+            minute % 60,
+          );
           _slots.add(
             Slot(
-              id: 'slot_${inst.id}_${d}_$i',
+              id: 'slot_${inst.id}_${dayOffset}_$minute',
               instructorId: inst.id,
               start: start,
-              end: start.add(const Duration(minutes: 30)),
+              end: start.add(Duration(minutes: schedule.slotMinutes)),
             ),
           );
         }
@@ -116,25 +147,113 @@ class MockBookingRepository implements BookingRepository {
     }
 
     // Demo bookings so the queue and review screens aren't empty.
-    _seedBooking('s2', 'slot_i1_1_0', 'Grade discussion for Quiz 2', BookingStatus.confirmed);
-    _seedBooking('s3', 'slot_i1_1_1', 'Excuse for missed assignment', BookingStatus.pending);
+    _seedBooking(
+      's2',
+      _slotAt('i1', 1, 9 * 60),
+      'Grade discussion for Quiz 2',
+      BookingStatus.confirmed,
+    );
+    _seedBooking(
+      's3',
+      _slotAt('i1', 1, 9 * 60 + 30),
+      'Excuse for missed assignment',
+      BookingStatus.pending,
+    );
+    _seedBooking(
+      's1',
+      _slotAt('i1', 1, 10 * 60),
+      'Follow-up consultation',
+      BookingStatus.changeRequested,
+      changeRequestedBy: 'i1',
+      changeReason:
+          'I have an urgent faculty commitment and need to cancel this appointment.',
+    );
+    _seedBooking(
+      's1',
+      _slotAt('i2', 2, 9 * 60),
+      'Help with database normalization',
+      BookingStatus.pending,
+    );
+    _seedBooking(
+      's2',
+      _slotAt('i2', 2, 9 * 60 + 30),
+      'Project proposal review',
+      BookingStatus.confirmed,
+    );
+    _seedBooking(
+      's3',
+      _slotAt('i3', 3, 9 * 60),
+      'Guidance on mobile app testing',
+      BookingStatus.pending,
+    );
+    _seedBooking(
+      's1',
+      _slotAt('i3', 3, 9 * 60 + 30),
+      'Capstone project check-in',
+      BookingStatus.confirmed,
+    );
   }
 
-  void _seedBooking(String studentId, String slotId, String topic, BookingStatus status) {
+  String _slotAt(String instructorId, int businessDayNumber, int minute) =>
+      (_slots
+              .where(
+                (slot) =>
+                    slot.instructorId == instructorId &&
+                    slot.start.weekday <= DateTime.friday &&
+                    slot.start.hour * 60 + slot.start.minute == minute,
+              )
+              .toList()
+            ..sort((a, b) => a.start.compareTo(b.start)))
+          .elementAt(businessDayNumber - 1)
+          .id;
+
+  Booking _seedBooking(
+    String studentId,
+    String slotId,
+    String topic,
+    BookingStatus status, {
+    String? changeRequestedBy,
+    String? changeReason,
+  }) {
     final slot = slotById(slotId)!;
     slot.isLocked = true;
     slot.inQueue = true;
-    _bookings.add(
-      Booking(
-        id: _nextId('b'),
-        studentId: studentId,
-        instructorId: slot.instructorId,
-        slotId: slotId,
-        topic: topic,
-        status: status,
-        createdAt: DateTime.now(),
-      ),
-    );
+    final booking =
+        Booking(
+            id: _nextId('b'),
+            studentId: studentId,
+            instructorId: slot.instructorId,
+            slotId: slotId,
+            topic: topic,
+            status: status,
+            createdAt: DateTime.now(),
+          )
+          ..statusBeforeCancel = status == BookingStatus.cancelRequested
+              ? BookingStatus.confirmed
+              : status
+          ..changeRequestedBy = changeRequestedBy
+          ..changeReason = changeReason
+          ..statusBeforeChange = status == BookingStatus.changeRequested
+              ? BookingStatus.confirmed
+              : status;
+    _bookings.add(booking);
+    if (status == BookingStatus.changeRequested &&
+        changeRequestedBy != null &&
+        changeReason != null) {
+      final recipientId = changeRequestedBy == studentId
+          ? slot.instructorId
+          : studentId;
+      _notify(
+        recipientId,
+        '${_name(changeRequestedBy)} requested to cancel the appointment. '
+        'Reason: $changeReason',
+      );
+      _notify(
+        changeRequestedBy,
+        'Your cancellation request was sent to ${_name(recipientId)} for approval.',
+      );
+    }
+    return booking;
   }
 
   // --------------------------------------------------------------- users
@@ -143,7 +262,8 @@ class MockBookingRepository implements BookingRepository {
   List<AppUser> get users => List.unmodifiable(_users);
 
   @override
-  List<AppUser> get instructors => _users.where((u) => u.role == UserRole.instructor).toList();
+  List<AppUser> get instructors =>
+      _users.where((u) => u.role == UserRole.instructor).toList();
 
   @override
   AppUser? userById(String id) => _users.where((u) => u.id == id).firstOrNull;
@@ -168,14 +288,40 @@ class MockBookingRepository implements BookingRepository {
   Slot? slotById(String id) => _slots.where((s) => s.id == id).firstOrNull;
 
   @override
-  Future<Slot> addSlot(String instructorId, DateTime start, DateTime end) async {
+  List<InstructorAvailability> availabilityFor(String instructorId) =>
+      List.unmodifiable([
+        for (final fallback in InstructorAvailability.defaults(instructorId))
+          _availability['${instructorId}_${fallback.weekday}'] ?? fallback,
+      ]);
+
+  @override
+  Future<void> saveAvailability(InstructorAvailability availability) async {
+    _availability['${availability.instructorId}_${availability.weekday}'] =
+        availability;
+    _changes.add(null);
+  }
+
+  @override
+  Future<Slot> addSlot(
+    String instructorId,
+    DateTime start,
+    DateTime end,
+  ) async {
     final overlaps = _slots.any(
-      (s) => s.instructorId == instructorId && s.start.isBefore(end) && start.isBefore(s.end),
+      (s) =>
+          s.instructorId == instructorId &&
+          s.start.isBefore(end) &&
+          start.isBefore(s.end),
     );
     if (overlaps) {
       throw SlotUnavailableException('That time overlaps an existing slot.');
     }
-    final slot = Slot(id: _nextId('slot_'), instructorId: instructorId, start: start, end: end);
+    final slot = Slot(
+      id: _nextId('slot_'),
+      instructorId: instructorId,
+      start: start,
+      end: end,
+    );
     _slots.add(slot);
     return slot;
   }
@@ -185,7 +331,9 @@ class MockBookingRepository implements BookingRepository {
     final slot = slotById(slotId);
     if (slot == null) return;
     if (slot.isLocked) {
-      throw SlotUnavailableException('This slot is booked. Cancel the booking first.');
+      throw SlotUnavailableException(
+        'This slot is booked. Cancel the booking first.',
+      );
     }
     _slots.remove(slot);
   }
@@ -205,7 +353,9 @@ class MockBookingRepository implements BookingRepository {
 
   @override
   List<Booking> bookingsForInstructor(String instructorId) {
-    final list = _bookings.where((b) => b.instructorId == instructorId).toList();
+    final list = _bookings
+        .where((b) => b.instructorId == instructorId)
+        .toList();
     list.sort((a, b) => _slotStart(a).compareTo(_slotStart(b)));
     return list;
   }
@@ -243,41 +393,125 @@ class MockBookingRepository implements BookingRepository {
   }
 
   @override
-  Future<void> reschedule(String bookingId, String newSlotId) async {
+  Future<void> requestBookingChange({
+    required String bookingId,
+    required String requesterId,
+    required String reason,
+    String? proposedSlotId,
+  }) async {
     final b = _booking(bookingId);
-    if (b.status != BookingStatus.pending && b.status != BookingStatus.confirmed) {
-      throw StateError('Only pending or confirmed bookings can be moved.');
+    if (b.status != BookingStatus.pending &&
+        b.status != BookingStatus.confirmed) {
+      throw StateError('This booking cannot be changed right now.');
     }
-    final newSlot = slotById(newSlotId);
-    if (newSlot == null || newSlot.isLocked) throw SlotUnavailableException();
+    if (requesterId != b.studentId && requesterId != b.instructorId) {
+      throw StateError('Only the student or instructor can request a change.');
+    }
+    final reasonError = bookingChangeReasonError(reason);
+    if (reasonError != null) throw StateError(reasonError);
+    final currentSlot = slotById(b.slotId);
+    if (currentSlot == null ||
+        !isBeforeBookingChangeCutoff(currentSlot.start)) {
+      throw StateError(
+        'Changes must be requested at least 3 hours before the appointment.',
+      );
+    }
 
-    final old = slotById(b.slotId);
-    old?.isLocked = false;
-    old?.inQueue = false;
-    newSlot.isLocked = true;
-    newSlot.inQueue = true;
-    b.slotId = newSlot.id;
-    b.instructorId = newSlot.instructorId;
-    b.status = BookingStatus.pending;
+    Slot? proposedSlot;
+    if (proposedSlotId != null) {
+      proposedSlot = slotById(proposedSlotId);
+      if (proposedSlot == null ||
+          proposedSlot.instructorId != b.instructorId ||
+          proposedSlot.isLocked ||
+          !isBeforeBookingChangeCutoff(proposedSlot.start)) {
+        throw SlotUnavailableException(
+          'That instructor time is no longer available.',
+        );
+      }
+      proposedSlot.isLocked = true;
+      proposedSlot.inQueue = false;
+    }
 
+    b.statusBeforeChange = b.status;
+    b.status = BookingStatus.changeRequested;
+    b.changeRequestedBy = requesterId;
+    b.changeReason = reason.trim();
+    b.proposedSlotId = proposedSlotId;
+    final recipientId = requesterId == b.studentId
+        ? b.instructorId
+        : b.studentId;
+    final action = proposedSlot == null
+        ? 'cancel the appointment'
+        : 'reschedule to ${fmtDateTime(proposedSlot.start)}';
     _notify(
-      b.instructorId,
-      '${_name(b.studentId)} rescheduled to ${fmtDateTime(newSlot.start)}. Please review.',
+      recipientId,
+      '${_name(requesterId)} requested to $action. Reason: ${b.changeReason}',
     );
-    _notify(b.studentId, 'Booking moved to ${fmtDateTime(newSlot.start)}. Waiting for approval.');
+    _notify(
+      requesterId,
+      'Your request to $action was sent to ${_name(recipientId)} for approval.',
+    );
   }
 
   @override
-  Future<void> requestCancellation(String bookingId) async {
+  Future<void> reviewBookingChange({
+    required String bookingId,
+    required String reviewerId,
+    required bool approve,
+  }) async {
     final b = _booking(bookingId);
-    if (b.status != BookingStatus.pending && b.status != BookingStatus.confirmed) {
-      throw StateError('This booking cannot be canceled.');
+    if (b.status != BookingStatus.changeRequested) {
+      throw StateError('There is no pending booking change to review.');
     }
-    b.statusBeforeCancel = b.status;
-    b.status = BookingStatus.cancelRequested;
-    final when = fmtDateTime(slotById(b.slotId)!.start);
-    _notify(b.instructorId, '${_name(b.studentId)} requested to cancel the $when consultation.');
-    _notify(b.studentId, 'Cancellation requested. Waiting for instructor review.');
+    if (reviewerId != b.studentId && reviewerId != b.instructorId ||
+        reviewerId == b.changeRequestedBy) {
+      throw StateError('Only the other participant can review this request.');
+    }
+    final currentSlot = slotById(b.slotId);
+    if (currentSlot == null) {
+      throw StateError('The original appointment slot could not be found.');
+    }
+    final proposedSlot = b.proposedSlotId == null
+        ? null
+        : slotById(b.proposedSlotId!);
+    if (b.proposedSlotId != null && proposedSlot == null) {
+      throw StateError('The proposed appointment slot could not be found.');
+    }
+    if (approve &&
+        (!isBeforeBookingChangeCutoff(currentSlot.start) ||
+            (proposedSlot != null &&
+                !isBeforeBookingChangeCutoff(proposedSlot.start)))) {
+      throw StateError(
+        'The request can only be approved at least 3 hours before the appointment.',
+      );
+    }
+
+    final requesterId = b.changeRequestedBy!;
+    final action = proposedSlot == null
+        ? 'cancellation'
+        : 'reschedule to ${fmtDateTime(proposedSlot.start)}';
+    if (approve) {
+      if (proposedSlot == null) {
+        b.status = BookingStatus.canceled;
+        _release(currentSlot);
+      } else {
+        _release(currentSlot);
+        b.slotId = proposedSlot.id;
+        b.status = BookingStatus.confirmed;
+        proposedSlot.inQueue = true;
+      }
+    } else {
+      if (proposedSlot != null) _release(proposedSlot);
+      b.status = b.statusBeforeChange;
+    }
+    b.changeRequestedBy = null;
+    b.changeReason = null;
+    b.proposedSlotId = null;
+
+    final response = approve ? 'approved' : 'declined';
+    final message = '${_name(reviewerId)} $response your $action request.';
+    _notify(requesterId, message);
+    _notify(reviewerId, 'You $response the $action request.');
   }
 
   // --------------------------------------------------- instructor actions
@@ -309,19 +543,33 @@ class MockBookingRepository implements BookingRepository {
   }
 
   @override
-  Future<void> reviewCancellation(String bookingId, {required bool approve}) async {
+  Future<void> reviewCancellation(
+    String bookingId, {
+    required bool approve,
+  }) async {
     final b = _booking(bookingId);
     if (b.status != BookingStatus.cancelRequested) return;
     final slot = slotById(b.slotId)!;
     if (approve) {
       b.status = BookingStatus.canceled;
       _release(slot);
-      _notify(b.studentId, 'Your cancellation for ${fmtDateTime(slot.start)} was approved.');
+      _notify(
+        b.studentId,
+        '${_name(b.instructorId)} approved your cancellation for ${fmtDateTime(slot.start)}.',
+      );
+      _notify(
+        b.instructorId,
+        'You approved ${_name(b.studentId)} cancellation for ${fmtDateTime(slot.start)}.',
+      );
     } else {
       b.status = b.statusBeforeCancel;
       _notify(
         b.studentId,
-        'Your cancellation for ${fmtDateTime(slot.start)} was not approved. The booking stays.',
+        '${_name(b.instructorId)} declined your cancellation for ${fmtDateTime(slot.start)}. The booking stays.',
+      );
+      _notify(
+        b.instructorId,
+        'You declined ${_name(b.studentId)} cancellation for ${fmtDateTime(slot.start)}.',
       );
     }
   }
@@ -332,21 +580,9 @@ class MockBookingRepository implements BookingRepository {
     if (b.status != BookingStatus.confirmed) return;
     b.status = BookingStatus.completed;
     slotById(b.slotId)?.inQueue = false;
-    _notify(b.studentId, 'Your consultation with ${_name(b.instructorId)} is marked completed.');
-  }
-
-  @override
-  Future<void> cancelByInstructor(String bookingId) async {
-    final b = _booking(bookingId);
-    if (b.status != BookingStatus.pending && b.status != BookingStatus.confirmed) {
-      return;
-    }
-    final slot = slotById(b.slotId)!;
-    b.status = BookingStatus.canceled;
-    _release(slot);
     _notify(
       b.studentId,
-      '${_name(b.instructorId)} canceled your consultation on ${fmtDateTime(slot.start)}.',
+      'Your consultation with ${_name(b.instructorId)} is marked completed.',
     );
   }
 
@@ -356,7 +592,10 @@ class MockBookingRepository implements BookingRepository {
   List<Slot> queueFor(String instructorId, DateTime day) {
     final list = _bookings
         .where(
-          (b) => b.instructorId == instructorId && b.status.isActive && sameDay(_slotStart(b), day),
+          (b) =>
+              b.instructorId == instructorId &&
+              b.status.isActive &&
+              sameDay(_slotStart(b), day),
         )
         .map((b) => slotById(b.slotId))
         .whereType<Slot>()

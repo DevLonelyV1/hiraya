@@ -1,11 +1,11 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
-import 'package:hiraya/data/firebase_booking_repository.dart';
 
 import '../data/booking_repository.dart';
 import '../models/app_user.dart';
 import '../models/booking.dart';
+import '../models/instructor_availability.dart';
 import '../models/slot.dart';
 
 /// App-wide state. Screens read data via `state.repo` after calling
@@ -18,7 +18,7 @@ class AppState extends ChangeNotifier {
     _sub = repo.changes.listen((_) => notifyListeners());
   }
 
-  final FirebaseBookingRepository repo;
+  final BookingRepository repo;
   StreamSubscription<void>? _sub;
 
   AppUser? _user;
@@ -74,20 +74,46 @@ class AppState extends ChangeNotifier {
 
   // ---- student actions ----
 
-  Future<Booking> book(Slot slot, String topic, {String? fileName}) =>
-      _run(() => repo.book(studentId: me.id, slotId: slot.id, topic: topic, fileName: fileName));
+  Future<Booking> book(Slot slot, String topic, {String? fileName}) => _run(
+    () => repo.book(
+      studentId: me.id,
+      slotId: slot.id,
+      topic: topic,
+      fileName: fileName,
+    ),
+  );
 
-  Future<void> reschedule(String bookingId, String newSlotId) =>
-      _run(() => repo.reschedule(bookingId, newSlotId));
+  Future<void> requestBookingChange({
+    required String bookingId,
+    required String reason,
+    String? proposedSlotId,
+  }) => _run(
+    () => repo.requestBookingChange(
+      bookingId: bookingId,
+      requesterId: me.id,
+      reason: reason,
+      proposedSlotId: proposedSlotId,
+    ),
+  );
 
-  Future<void> requestCancellation(String bookingId) =>
-      _run(() => repo.requestCancellation(bookingId));
+  Future<void> reviewBookingChange(String bookingId, {required bool approve}) =>
+      _run(
+        () => repo.reviewBookingChange(
+          bookingId: bookingId,
+          reviewerId: me.id,
+          approve: approve,
+        ),
+      );
 
   // ---- instructor actions ----
 
-  Future<void> addSlot(DateTime start, DateTime end) => _run(() => repo.addSlot(me.id, start, end));
+  Future<void> addSlot(DateTime start, DateTime end) =>
+      _run(() => repo.addSlot(me.id, start, end));
 
   Future<void> removeSlot(String slotId) => _run(() => repo.removeSlot(slotId));
+
+  Future<void> saveAvailability(InstructorAvailability availability) =>
+      _run(() => repo.saveAvailability(availability));
 
   Future<void> reviewRequest(String bookingId, {required bool approve}) =>
       _run(() => repo.reviewRequest(bookingId, approve: approve));
@@ -95,10 +121,8 @@ class AppState extends ChangeNotifier {
   Future<void> reviewCancellation(String bookingId, {required bool approve}) =>
       _run(() => repo.reviewCancellation(bookingId, approve: approve));
 
-  Future<void> markCompleted(String bookingId) => _run(() => repo.markCompleted(bookingId));
-
-  Future<void> cancelByInstructor(String bookingId) =>
-      _run(() => repo.cancelByInstructor(bookingId));
+  Future<void> markCompleted(String bookingId) =>
+      _run(() => repo.markCompleted(bookingId));
 
   // ---- notifications ----
 

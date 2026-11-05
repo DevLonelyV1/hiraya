@@ -4,7 +4,7 @@ A Flutter mobile app where students book consultations with instructors, track t
 queue position, and get notified. Built for STI Caloocan.
 
 **Current iteration:** Iteration 1 (about 30% of the full app) - the **Appointment & Queue subsystem**.
-**Data:** mock, in-memory (resets when the app restarts). No backend yet.
+**Data:** Firebase by default; use the in-memory mock for local demos (resets when the app restarts).
 **Targets:** Android emulator (main), Flutter web in a phone-sized window (backup).
 
 **Team lead:** Emanuel Czire C. Haber  |  **Group:** Hiraya
@@ -19,9 +19,38 @@ You need Flutter installed and an Android emulator (or Chrome).
 git clone <repo-url>
 cd consult_app
 flutter pub get
-flutter run              # choose the Android emulator
+flutter run              # Firebase-backed app
 # or: flutter run -d chrome
 ```
+
+For an offline instructor-workflow demo with seeded requests, run:
+
+```bash
+flutter run -d emulator-5554 --dart-define=USE_MOCK=true
+```
+
+Choose any instructor to see their own office hours and request dashboard.
+Prof. Reyes has proposed canceling Ana's consultation; sign in as Ana to approve
+or decline the request. Prof. Santos and Prof. Dela Cruz have their own pending
+and confirmed sessions. Student accounts show
+their individual booking summaries, next consultation, and faculty search.
+Mock bookings and slot changes reset when the app restarts.
+
+Instructor office hours use a default Monday-Friday, 9:00 AM-12:00 PM weekly
+schedule, with weekends off and 30-minute slots. Instructors can edit each
+weekday or mark it unavailable; changes publish slots for the next four weeks.
+Already-booked appointments are retained when a day or time range changes.
+Both roles have a Calendar tab showing their own upcoming booked meetings.
+Firebase weekly settings are stored under the instructor's
+`users/{instructorId}.availabilitySchedules` field.
+
+Students and instructors can propose a cancellation or a reschedule with a
+reason. A reschedule proposal reserves an available instructor slot while the
+other participant reviews it. The booking changes only after the other person
+approves; declining releases the proposed slot and keeps the original booking.
+Requests and approvals must happen at least three hours before the existing
+appointment, and reschedule times must also be at least three hours away.
+Both participants receive in-app notifications for proposals and decisions.
 
 ---
 
@@ -60,9 +89,9 @@ Screen  <-  notifyListeners()  <-  (state changed)
 ```
 pending --approve--> confirmed --complete--> completed
 pending --reject---> rejected
-pending/confirmed --student requests cancel--> cancelRequested
-cancelRequested --instructor approves--> canceled   (slot is freed)
-cancelRequested --instructor keeps----> back to previous status
+pending/confirmed --either party proposes a change--> changeRequested
+changeRequested --other party approves--> confirmed or canceled
+changeRequested --other party declines--> previous status
 ```
 
 Queue position is calculated, not stored: earlier active bookings for the same

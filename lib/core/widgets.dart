@@ -5,13 +5,14 @@ import '../models/booking.dart';
 /// Shared widgets used by every feature. Owner: Person 1 (Lead).
 
 MaterialColor statusColor(BookingStatus s) => switch (s) {
-      BookingStatus.pending => Colors.orange,
-      BookingStatus.confirmed => Colors.green,
-      BookingStatus.cancelRequested => Colors.deepOrange,
-      BookingStatus.completed => Colors.blueGrey,
-      BookingStatus.canceled => Colors.red,
-      BookingStatus.rejected => Colors.red,
-    };
+  BookingStatus.pending => Colors.orange,
+  BookingStatus.confirmed => Colors.green,
+  BookingStatus.cancelRequested => Colors.deepOrange,
+  BookingStatus.changeRequested => Colors.deepOrange,
+  BookingStatus.completed => Colors.blueGrey,
+  BookingStatus.canceled => Colors.red,
+  BookingStatus.rejected => Colors.red,
+};
 
 class StatusChip extends StatelessWidget {
   const StatusChip(this.status, {super.key});
@@ -79,10 +80,9 @@ class SectionHeader extends StatelessWidget {
       padding: const EdgeInsets.only(top: 8, bottom: 8),
       child: Text(
         text,
-        style: Theme.of(context)
-            .textTheme
-            .titleMedium
-            ?.copyWith(fontWeight: FontWeight.bold),
+        style: Theme.of(
+          context,
+        ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
       ),
     );
   }

@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../state/app_state.dart';
+import '../calendar/appointment_calendar_screen.dart';
 import '../notifications/notifications_screen.dart';
 import 'my_bookings_screen.dart';
 import 'search_slots_screen.dart';
@@ -22,7 +23,12 @@ class StudentHome extends StatefulWidget {
 class _StudentHomeState extends State<StudentHome> {
   int _index = 0;
 
-  static const _titles = ['Find a consultation', 'My bookings', 'Notifications'];
+  static const _titles = [
+    'Find a consultation',
+    'Calendar',
+    'My bookings',
+    'Notifications',
+  ];
 
   @override
   Widget build(BuildContext context) {
@@ -43,6 +49,7 @@ class _StudentHomeState extends State<StudentHome> {
         index: _index,
         children: const [
           SearchSlotsScreen(),
+          AppointmentCalendarScreen(),
           MyBookingsScreen(),
           NotificationsScreen(),
         ],
@@ -52,6 +59,10 @@ class _StudentHomeState extends State<StudentHome> {
         onDestinationSelected: (i) => setState(() => _index = i),
         destinations: [
           const NavigationDestination(icon: Icon(Icons.search), label: 'Find'),
+          const NavigationDestination(
+            icon: Icon(Icons.calendar_month_outlined),
+            label: 'Calendar',
+          ),
           const NavigationDestination(
             icon: Icon(Icons.event_note),
             label: 'Bookings',

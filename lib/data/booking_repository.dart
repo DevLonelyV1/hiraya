@@ -1,6 +1,7 @@
 import '../models/app_notification.dart';
 import '../models/app_user.dart';
 import '../models/booking.dart';
+import '../models/instructor_availability.dart';
 import '../models/slot.dart';
 
 /// Thrown when a slot is already taken, overlaps, or can't be removed.
@@ -42,6 +43,7 @@ abstract class BookingRepository {
 
   /// Throws [AuthFailure] on bad credentials.
   Future<AppUser> signIn(String email, String password);
+  Future<AppUser> signInDemo(String userId);
   Future<void> signOut();
 
   // --- Users ---
@@ -54,6 +56,8 @@ abstract class BookingRepository {
   Slot? slotById(String id);
   Future<Slot> addSlot(String instructorId, DateTime start, DateTime end);
   Future<void> removeSlot(String slotId);
+  List<InstructorAvailability> availabilityFor(String instructorId);
+  Future<void> saveAvailability(InstructorAvailability availability);
 
   // --- Bookings ---
   List<Booking> bookingsForStudent(String studentId);
@@ -68,18 +72,26 @@ abstract class BookingRepository {
     String? fileName,
   });
 
-  /// Moves a booking to a new slot (old slot is released). Status goes back
-  /// to PENDING so the instructor re-approves.
-  Future<void> reschedule(String bookingId, String newSlotId);
+  /// Either party proposes a cancellation or a new slot. The other party
+  /// must approve before the booking changes.
+  Future<void> requestBookingChange({
+    required String bookingId,
+    required String requesterId,
+    required String reason,
+    String? proposedSlotId,
+  });
 
-  /// Student asks to cancel -> status CANCEL_REQUESTED; instructor decides.
-  Future<void> requestCancellation(String bookingId);
+  /// Accepts or declines a booking change proposed by the other party.
+  Future<void> reviewBookingChange({
+    required String bookingId,
+    required String reviewerId,
+    required bool approve,
+  });
 
   // --- Instructor actions ---
   Future<void> reviewRequest(String bookingId, {required bool approve});
   Future<void> reviewCancellation(String bookingId, {required bool approve});
   Future<void> markCompleted(String bookingId);
-  Future<void> cancelByInstructor(String bookingId);
 
   // --- Queue ---
   /// 1-based position among active bookings of the same instructor on the
