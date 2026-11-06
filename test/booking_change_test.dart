@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
-import 'package:hiraya/data/mock_booking_repository.dart';
+import 'package:hiraya/data/in_memory_booking_repository.dart';
 import 'package:hiraya/models/booking.dart';
 import 'package:hiraya/models/booking_change_policy.dart';
 import 'package:hiraya/models/slot.dart';
@@ -38,13 +38,13 @@ void main() {
   });
 
   group('mutual booking changes', () {
-    late MockBookingRepository repo;
+    late InMemoryBookingRepository repo;
     late Booking booking;
     late Slot originalSlot;
     late Slot proposedSlot;
 
     setUp(() {
-      repo = MockBookingRepository();
+      repo = InMemoryBookingRepository();
       booking = repo
           .bookingsForInstructor('i1')
           .firstWhere((entry) => entry.status == BookingStatus.confirmed);
@@ -314,12 +314,12 @@ void main() {
   });
 
   group('student booking actions', () {
-    late MockBookingRepository repo;
+    late InMemoryBookingRepository repo;
     late AppState state;
     late Booking instructorCancellation;
 
     setUp(() async {
-      repo = MockBookingRepository();
+      repo = InMemoryBookingRepository();
       state = AppState(repo);
       await state.signInDemo(repo.userById('s1')!);
       instructorCancellation = repo

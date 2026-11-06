@@ -64,7 +64,7 @@ lib/
   models/                    User, Slot, Booking, Notification
   data/
     booking_repository.dart  THE CONTRACT (interface everyone codes against)
-    mock_booking_repository.dart  In-memory data + business rules
+    in_memory_booking_repository.dart  In-memory data + business rules
   state/
     app_state.dart           App-wide state (logged-in user + actions)
   features/

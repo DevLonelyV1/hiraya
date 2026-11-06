@@ -110,6 +110,9 @@ class AppState extends ChangeNotifier {
   Future<void> addSlot(DateTime start, DateTime end) =>
       _run(() => repo.addSlot(me.id, start, end));
 
+  Future<void> updateSlot(String slotId, DateTime start, DateTime end) =>
+      _run(() => repo.updateSlot(slotId, start, end));
+
   Future<void> removeSlot(String slotId) => _run(() => repo.removeSlot(slotId));
 
   Future<void> saveAvailability(InstructorAvailability availability) =>

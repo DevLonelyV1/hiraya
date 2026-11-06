@@ -223,6 +223,8 @@ class _RequestCardState extends State<_RequestCard> {
       if (context.mounted) _toast(context, 'Could not update request: $error');
     } on StateError catch (error) {
       if (context.mounted) _toast(context, 'Could not update request: $error');
+    } on Exception catch (error) {
+      if (context.mounted) _toast(context, 'Could not update request: $error');
     } finally {
       if (mounted) setState(() => _busy = false);
     }

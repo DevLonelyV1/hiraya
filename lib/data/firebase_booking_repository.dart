@@ -374,6 +374,29 @@ class FirebaseBookingRepository implements BookingRepository {
   }
 
   @override
+  Future<void> updateSlot(String slotId, DateTime start, DateTime end) async {
+    final slot = slotById(slotId);
+    if (slot == null) return;
+    if (slot.isLocked) {
+      throw SlotUnavailableException('This slot is booked. Cancel the booking first.');
+    }
+    final overlaps = _slots.any(
+      (other) =>
+          other.id != slotId &&
+          other.instructorId == slot.instructorId &&
+          other.start.isBefore(end) &&
+          start.isBefore(other.end),
+    );
+    if (overlaps) {
+      throw SlotUnavailableException('That time overlaps an existing slot.');
+    }
+    await _slotRef(slotId).update({
+      'start': Timestamp.fromDate(start.toUtc()),
+      'end': Timestamp.fromDate(end.toUtc()),
+    });
+  }
+
+  @override
   Future<void> removeSlot(String slotId) async {
     final slot = slotById(slotId);
     if (slot == null) return;

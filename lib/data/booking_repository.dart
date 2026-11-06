@@ -55,6 +55,7 @@ abstract class BookingRepository {
   List<Slot> slotsFor(String instructorId, {bool onlyAvailable = false});
   Slot? slotById(String id);
   Future<Slot> addSlot(String instructorId, DateTime start, DateTime end);
+  Future<void> updateSlot(String slotId, DateTime start, DateTime end);
   Future<void> removeSlot(String slotId);
   List<InstructorAvailability> availabilityFor(String instructorId);
   Future<void> saveAvailability(InstructorAvailability availability);

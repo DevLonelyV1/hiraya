@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 import '../../core/format.dart';
 import '../../data/booking_repository.dart';
 import '../../models/instructor_availability.dart';
+import '../../models/slot.dart';
 import '../../state/app_state.dart';
 
 class OfficeHoursScreen extends StatelessWidget {
@@ -140,6 +141,7 @@ class OfficeHoursScreen extends StatelessWidget {
                 start: slot.start,
                 end: slot.end,
                 isBooked: slot.isLocked,
+                onEdit: slot.isLocked ? null : () => _editSlot(context, slot),
                 onRemove: slot.isLocked
                     ? null
                     : () => _remove(context, slot.id),
@@ -266,29 +268,35 @@ class OfficeHoursScreen extends StatelessWidget {
     }
   }
 
-  Future<void> _addSlot(BuildContext context) async {
+  Future<DateTime?> _pickDateTime(
+    BuildContext context,
+    DateTime initial,
+  ) async {
     final now = DateTime.now();
     final date = await showDatePicker(
       context: context,
-      initialDate: now.add(const Duration(days: 1)),
+      initialDate: initial.isBefore(now) ? now : initial,
       firstDate: now,
       lastDate: now.add(const Duration(days: 90)),
     );
-    if (date == null || !context.mounted) return;
+    if (date == null || !context.mounted) return null;
 
     final time = await showTimePicker(
       context: context,
-      initialTime: const TimeOfDay(hour: 9, minute: 0),
+      initialTime: TimeOfDay.fromDateTime(initial),
     );
-    if (time == null || !context.mounted) return;
+    if (time == null || !context.mounted) return null;
 
-    final start = DateTime(
-      date.year,
-      date.month,
-      date.day,
-      time.hour,
-      time.minute,
+    return DateTime(date.year, date.month, date.day, time.hour, time.minute);
+  }
+
+  Future<void> _addSlot(BuildContext context) async {
+    final start = await _pickDateTime(
+      context,
+      DateTime.now().add(const Duration(days: 1)),
     );
+    if (start == null || !context.mounted) return;
+
     if (!start.isAfter(DateTime.now())) {
       _showMessage(context, 'Choose a future time for the office-hour slot.');
       return;
@@ -306,6 +314,25 @@ class OfficeHoursScreen extends StatelessWidget {
       if (context.mounted) _showMessage(context, 'Could not add slot: $error');
     } on StateError catch (error) {
       if (context.mounted) _showMessage(context, 'Could not add slot: $error');
+    }
+  }
+
+  Future<void> _editSlot(BuildContext context, Slot slot) async {
+    final start = await _pickDateTime(context, slot.start);
+    if (start == null || !context.mounted) return;
+    try {
+      await context.read<AppState>().updateSlot(
+        slot.id,
+        start,
+        start.add(slot.end.difference(slot.start)),
+      );
+      if (context.mounted) _showMessage(context, 'Office-hour slot updated.');
+    } on SlotUnavailableException catch (error) {
+      if (context.mounted) _showMessage(context, error.message);
+    } on FirebaseException catch (error) {
+      if (context.mounted) _showMessage(context, 'Could not edit slot: $error');
+    } on StateError catch (error) {
+      if (context.mounted) _showMessage(context, 'Could not edit slot: $error');
     }
   }
 
@@ -515,6 +542,7 @@ class _OfficeHourCard extends StatelessWidget {
     required this.start,
     required this.end,
     required this.isBooked,
+    required this.onEdit,
     required this.onRemove,
   });
 
@@ -522,6 +550,7 @@ class _OfficeHourCard extends StatelessWidget {
   final DateTime start;
   final DateTime end;
   final bool isBooked;
+  final VoidCallback? onEdit;
   final VoidCallback? onRemove;
 
   @override
@@ -617,12 +646,24 @@ class _OfficeHourCard extends StatelessWidget {
               child: Icon(Icons.lock_outline, color: Color(0xFFADB3C3)),
             )
           else
-            IconButton(
-              tooltip: 'Remove slot',
-              visualDensity: VisualDensity.compact,
-              icon: const Icon(Icons.delete_outline_rounded),
-              color: theme.colorScheme.onSurfaceVariant,
-              onPressed: onRemove,
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  tooltip: 'Edit slot',
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.edit_outlined),
+                  color: theme.colorScheme.onSurfaceVariant,
+                  onPressed: onEdit,
+                ),
+                IconButton(
+                  tooltip: 'Remove slot',
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.delete_outline_rounded),
+                  color: theme.colorScheme.onSurfaceVariant,
+                  onPressed: onRemove,
+                ),
+              ],
             ),
         ],
       ),

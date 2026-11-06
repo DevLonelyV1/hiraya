@@ -7,7 +7,7 @@ import 'package:provider/provider.dart';
 import 'core/theme.dart';
 import 'data/booking_repository.dart';
 import 'data/firebase_booking_repository.dart';
-import 'data/mock_booking_repository.dart';
+import 'data/in_memory_booking_repository.dart';
 import 'features/auth/login_screen.dart';
 import 'features/instructor/instructor_home.dart';
 import 'features/student/student_home.dart';
@@ -21,7 +21,7 @@ void main() async {
 
   final BookingRepository repo;
   if (_useMock) {
-    repo = MockBookingRepository();
+    repo = InMemoryBookingRepository();
   } else {
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
